@@ -56,56 +56,23 @@ def vis_cluster(dist, patch_dims, ntop, img):
     cv2.imwrite('viz_cluster.jpg', viz)
     
     
-def vis_gradient(X, tmm, img):
-    from matplotlib.offsetbox import TextArea, DrawingArea, OffsetImage, AnnotationBbox
-    
-    #with open('tmp.pkl') as fin:
-    #    X, tmm, img = cPickle.load(fin)    
-    #img = np.tile(img, 3)
-    l = []
-    q = tmm.transform(X)
-    # pick a mu cluster equal to ind, based on the min number of counts, ind = 5
-    # or pick a random index eg. ind=9
-    ind = np.bincount(q.argmax(axis=1)).argmin()
-    # select those q assignments to cluster 5
-    l = [ i for i in xrange(X.shape[0]) if q[i].argmax() == ind ]
-    # select corresponding X and images
-    Xind = X[l,:]
-    imgind = np.asarray(img)[l]
-
-    # again find qs of Xs of cluster assignments to cluster 5
-    q = tmm.transform(Xind)
-    q = (q.T/q.sum(axis=1)).T
+def vis_absgradient_final(pfinal, zfinal, dec_mu, sep):
+  
+    qfinal_train = pfinal[:sep,:]
+    qfinal_val = pfinal[sep:,:]
     # calculate target probabilities based on q
-    p = (q**2)
-    p = (p.T/p.sum(axis=1)).T
+    pfinal_train = (qfinal_train**2)
+    pfinal_train = (pfinal_train.T/pfinal_train.sum(axis=1)).T
+    pfinal_val = (qfinal_val**2)
+    pfinal_val = (pfinal_val.T/pfinal_val.sum(axis=1)).T
     # calculate begining of gradient
-    grad = 2.0/(1.0+cdist(Xind, tmm.cluster_centers_, 'sqeuclidean'))*(p-q)*cdist(Xind, tmm.cluster_centers_, 'cityblock')
+    gradfinal_train = 2.0/(1.0+cdist(zfinal[:sep,:], dec_mu, 'sqeuclidean'))*(pfinal_train-qfinal_train)*cdist(zfinal[:sep,:], dec_mu, 'cityblock')
+    gradfinal_val = 2.0/(1.0+cdist(zfinal[sep:,:], dec_mu, 'sqeuclidean'))*(pfinal_val-qfinal_val)*cdist(zfinal[sep:,:], dec_mu, 'cityblock')
 
-    fig, ax = plt.subplots()
-    ax.scatter(q[:,ind], grad[:,ind], marker=u'+')
-
-    n_disp = 10
-    # sort the indices from large to small qs
-    arg = np.argsort(q[:,ind])
-    for i in xrange(n_disp):
-        j = arg[int(Xind.shape[0]*(1.0-1.0*i/n_disp))-1]
-        imgbox = OffsetImage(imgind[j], zoom=1)
-        print q[j,ind]
-        ab = AnnotationBbox(imgbox, (q[j,ind], grad[j,ind]),
-                            xybox=(0.95-1.0*i/n_disp, 1.06 ),
-                            xycoords='data',
-                            boxcoords=("axes fraction", "axes fraction"),
-                            pad=0.0,
-                            arrowprops=dict(arrowstyle="->"))
-        ax.add_artist(ab)
-        
-    plt.xlabel(r'$q_{ij}$', fontsize=24)
-    plt.ylabel(r'$|\frac{\partial L}{\partial z_i}|$', fontsize=24)
-    plt.draw()
-    plt.show()
+    G = np.mean(gradfinal_train.mean(axis=0))/ np.mean(gradfinal_val.mean(axis=0))
+    return(G)
     
-
+  
 def vis_gradient_NME(combX, tmm, imgd, nxGdata, titleplot):
     from matplotlib.offsetbox import TextArea, DrawingArea, OffsetImage, AnnotationBbox
     import matplotlib.patches as mpatches
@@ -216,8 +183,18 @@ def vis_topscoring_NME(combX, imgd, num_centers, nxGdata, pfinal, zfinal, titlep
     # select those q assignments to cluster ind
     fig = plt.figure(figsize=(20, 15))
     n_disp = 5
+    disp_num_centers = min(5,num_centers)
 
+    # find cluster assigments and sort to display the 5 bigest clusters    
+    n_clusterind = []
     for ind in xrange(num_centers):
+        # select those q assignments to cluster ind
+        l = [ i for i in xrange(combX.shape[0]) if pfinal[i].argmax() == ind ]
+        n_clusterind.append( len(l) )
+        
+    # select clusters to display
+    sel_clusters = np.argsort(n_clusterind)[::-1][:disp_num_centers]
+    for kind, ind in enumerate(sel_clusters):
         # select those q assignments to cluster ind
         l = [ i for i in xrange(combX.shape[0]) if pfinal[i].argmax() == ind ]
         # select corresponding X and images
@@ -237,8 +214,8 @@ def vis_topscoring_NME(combX, imgd, num_centers, nxGdata, pfinal, zfinal, titlep
         for j in xrange(n_disp):
             k = arg[int(Xind.shape[0]-1-j)]
             # plot            
-            row = ind*n_disp
-            ax = fig.add_subplot(num_centers,n_disp,row+1+j)
+            row = kind*n_disp
+            ax = fig.add_subplot(disp_num_centers,n_disp,row+1+j)
             ax.imshow(imgind[k], cmap=plt.cm.gray_r)
             ax.set_adjustable('box-forced')
             ax.set_title('{}_{}'.format(nxGind.iloc[k]['roi_id'],nxGind.iloc[k]['roiBIRADS']+nxGind.iloc[k]['classNME']+str(nxGind.iloc[k]['nme_dist'])))
@@ -460,9 +437,10 @@ def plot_pngs_showNN(tsne_id, Z_tsne, y_tsne, lesion_id, nxG_name, title=None):
     import matplotlib.gridspec as gridspec
     from matplotlib.patches import ConnectionPatch
     import scipy.spatial as spatial
+    from matplotlib._png import read_png
 
     ########################################   
-    fig_path = r'Z:\Cristina\Section3\exploreDR_NME_classification\mxnet\NME_DEC\figs'
+    fig_path = r'Z:\Cristina\Section3\NME_DEC\figs'
 
     x_min, x_max = np.min(Z_tsne, 0), np.max(Z_tsne, 0)
     Z_tsne = (Z_tsne - x_min) / (x_max - x_min)
@@ -500,7 +478,7 @@ def plot_pngs_showNN(tsne_id, Z_tsne, y_tsne, lesion_id, nxG_name, title=None):
     ax1.set_xlim(-0.1,1.1)
     ax1.set_ylim(-0.1,1.1)    
     
-    ## plot tsne
+    ## plot TSNE
     for i in range(Z_tsne.shape[0]):
         for k in range(len(classes)):
             if str(y_tsne[i])==classes[k]: 
@@ -509,7 +487,7 @@ def plot_pngs_showNN(tsne_id, Z_tsne, y_tsne, lesion_id, nxG_name, title=None):
                  fontdict={'weight': 'bold', 'size': 8})     
                  
     #############################
-    ###### 2) load MST and display (png) 
+    ###### 1) load tsne_id and display (png) 
     #############################
     # us e ConnectorPatch is useful when you want to connect points in different axes
     con1 = ConnectionPatch(xyA=(0,1), xyB=Z_tsne[tsne_id-1], coordsA='axes fraction', coordsB='data',
@@ -521,18 +499,16 @@ def plot_pngs_showNN(tsne_id, Z_tsne, y_tsne, lesion_id, nxG_name, title=None):
     ax2.set_adjustable('box-forced')   
     ax2.set_title(nxG_name)
 
-         
     #############################
-    ###### 3) Find closest neighborhs and plot
-    #############################
+    ###### 2) Examine and plot TSNE with KNN neighbor graphs in a radius of tnse embedding = 0.01
+    #############################    
     pdNN = pd.DataFrame({})  
-    
     Z_embedding_tree = spatial.cKDTree(Z_tsne, compact_nodes=True)
     # This finds the index of all points within distance 0.1 of embedded point X_tsne[lesion_id]
     closestd = 0.01
     NN_embedding_indx_list = Z_embedding_tree.query_ball_point(Z_tsne[tsne_id-1], closestd)
     
-    while(len(NN_embedding_indx_list)<=5):
+    while(len(NN_embedding_indx_list)<=6):
         closestd+=0.005
         NN_embedding_indx_list = Z_embedding_tree.query_ball_point(Z_tsne[tsne_id-1], closestd)
 
@@ -542,11 +518,6 @@ def plot_pngs_showNN(tsne_id, Z_tsne, y_tsne, lesion_id, nxG_name, title=None):
     # plot knn embedded poitns
     for k in range(k_nn):
         k_nn_roid_indx = NN_embedding_indx[k] # finds indices from 0-614, but roi_id => 1-615
-        
-        # us e ConnectorPatch is useful when you want to connect points in different axes
-        conknn = ConnectionPatch(xyA=(0,1), xyB=Z_tsne[k_nn_roid_indx], coordsA='axes fraction', coordsB='data',
-                axesA=axes[k], axesB=ax1, arrowstyle="simple",connectionstyle='arc3')
-        axes[k].add_artist(conknn) 
             
         ###### read MST from roi_id
         k_nn_roid = k_nn_roid_indx+1  # finds indices from 0-614, but roi_id => 1-615
@@ -557,22 +528,24 @@ def plot_pngs_showNN(tsne_id, Z_tsne, y_tsne, lesion_id, nxG_name, title=None):
         ###### find database info for roi_id
         localdata = Querylocal()
         dflesionk_nn  = localdata.queryby_roid(k_nn_roid)
-        
         lesion_record = pd.Series(dflesionk_nn.Lesion_record.__dict__)
         roi_record = pd.Series(dflesionk_nn.ROI_record.__dict__)
         
-        #lesion_id = lesion_record['lesion_id']
         knn_lesion_id = lesion_record['lesion_id']
         StudyID = lesion_record['cad_pt_no_txt']
         AccessionN = lesion_record['exam_a_number_txt']    
         roiLabel = roi_record['roi_label']
         roi_diagnosis = roi_record['roi_diagnosis']
         roi_BIRADS = lesion_record['BIRADS']
-        print "Indication by y_tsne: %s, by database: %s = %s" % (y_tsne[k_nn_roid_indx],roi_BIRADS+roiLabel,roi_diagnosis)
- 
+        
         #############################
-        ###### 3) Examine and plot TSNE with KNN neighbor graphs in a radius of tnse embedding = 0.1
-        #############################         
+        ###### 3) plot knn closest neighborhs and plot
+        #############################
+        # us e ConnectorPatch is useful when you want to connect points in different axes
+        conknn = ConnectionPatch(xyA=(0,1), xyB=Z_tsne[k_nn_roid_indx], coordsA='axes fraction', coordsB='data',
+                axesA=axes[k], axesB=ax1, arrowstyle="simple",connectionstyle='arc3')
+        axes[k].add_artist(conknn) 
+        print "Indication by y_tsne: %s, by database: %s = %s" % (y_tsne[k_nn_roid_indx],roi_BIRADS+roiLabel,roi_diagnosis)
         nxG_name = '{}_{}_roi{}_lesion{}'.format(y_tsne[k_nn_roid_indx],roi_diagnosis,k_nn_roid,str(knn_lesion_id))
         axes[k].set_title(nxG_name)  
             
@@ -591,7 +564,7 @@ def plot_pngs_showNN(tsne_id, Z_tsne, y_tsne, lesion_id, nxG_name, title=None):
             
         # append counts to master lists
         pdNN = pdNN.append( pd.DataFrame(rows, index=index) )
-        #############################
+
                
     if title is not None:
         plt.title(title)
@@ -608,7 +581,6 @@ def visualize_Zlatent_NN_fortsne_id(Z_tsne, y_tsne, tsne_id, saveFigs=False):
     import gzip
     import SimpleITK as sitk
     import networkx as nx
-    from matplotlib._png import read_png
     import matplotlib.pyplot as plt    
 
     #############################
@@ -642,7 +614,7 @@ def visualize_Zlatent_NN_fortsne_id(Z_tsne, y_tsne, tsne_id, saveFigs=False):
     
     #show and save
     if(saveFigs):
-        figTSNE.savefig( os.path.join(nxGfeatures_path,'lesion_id_{}_TSNE_nxGwSER_{}{}_{}.pdf'.format(str(lesion_id),cond,BenignNMaligNAnt,Diagnosis)), bbox_inches='tight') 
+        figTSNE.savefig( 'results/knnTSNE_roid_{}_lesionid_{}_{}_{}.pdf'.format(tsne_id,str(lesion_id),roi_BIRADS+roiLabel,roi_diagnosis), bbox_inches='tight') 
         plt.close()
    
     return pdNN    
