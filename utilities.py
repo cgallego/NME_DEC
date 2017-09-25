@@ -15,10 +15,34 @@ from xml.dom import minidom
 import matplotlib.pyplot as plt 
 from scipy.spatial.distance import cdist
 
-info_path = 'Z://Cristina//Section3//breast_MR_NME_pipeline' # os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
-sys.path = [info_path] + sys.path
-from query_localdatabase import *
+#info_path = 'Z://Cristina//Section3//breast_MR_NME_pipeline' # os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
+#sys.path = [info_path] + sys.path
+#from query_localdatabase import *
 
+class TMM(object):
+    from scipy.spatial.distance import cdist
+    def __init__(self, n_components=1, alpha=1): 
+        self.n_components = n_components
+        self.tol = 1e-5
+        self.alpha = float(alpha)
+        
+    def fit(self, X):
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(self.n_components, n_init=20)
+        kmeans.fit(X)
+        self.cluster_centers_ = kmeans.cluster_centers_
+        self.covars_ = np.ones(self.cluster_centers_.shape)
+    
+    def transform(self, X):
+        p = 1.0
+        dist = cdist(X, self.cluster_centers_)
+        r = 1.0/(1.0+dist**2/self.alpha)**((self.alpha+p)/2.0)
+        r = (r.T/r.sum(axis=1)).T
+        return r
+    
+    def predict(self, X):
+        return self.transform(X).argmax(axis=1)
+        
 def vis_square(fname, data, padsize=1, padval=0):
     data -= data.min()
     data /= data.max()
@@ -230,30 +254,6 @@ def vis_topscoring_NME(combX, imgd, num_centers, nxGdata, pfinal, zfinal, titlep
     
     
     
-class TMM(object):
-    def __init__(self, n_components=1, alpha=1): 
-        self.n_components = n_components
-        self.tol = 1e-5
-        self.alpha = float(alpha)
-        
-    def fit(self, X):
-        from sklearn.cluster import KMeans
-        kmeans = KMeans(self.n_components, n_init=20)
-        kmeans.fit(X)
-        self.cluster_centers_ = kmeans.cluster_centers_
-        self.covars_ = np.ones(self.cluster_centers_.shape)
-    
-    def transform(self, X):
-        p = 1.0
-        dist = cdist(X, self.cluster_centers_)
-        r = 1.0/(1.0+dist**2/self.alpha)**((self.alpha+p)/2.0)
-        r = (r.T/r.sum(axis=1)).T
-        return r
-    
-    def predict(self, X):
-        return self.transform(X).argmax(axis=1)
-    
-    
 def plot_embedding(X, y, ax, title=None, legend=True, plotcolor=True):
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
@@ -267,25 +267,81 @@ def plot_embedding(X, y, ax, title=None, legend=True, plotcolor=True):
     classes = [str(c) for c in np.unique(y)]
     colors=plt.cm.viridis(np.linspace(0,1,len(classes))) # plt.cm.gist_rainbow
     c_patchs = []
+    greyc_U = np.array([0.5,0.5,0.5,1])
     for k in range(len(classes)):
+        if(classes[k]=="U" or classes[k]=="N/A"):
+            c_patchs.append(mpatches.Patch(color=greyc_U, label=classes[k]))
+        else:
             c_patchs.append(mpatches.Patch(color=colors[k], label=classes[k]))
         
     if(legend):
         plt.legend(handles=c_patchs, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':10})
     
-
     for i in range(X.shape[0]):
         for k in range(len(classes)):
             if str(y[i])==classes[k]: 
-                colori = colors[k] 
+                if(classes[k]=="U" or classes[k]=="N/A"):
+                    colori = greyc_U
+                else:
+                    colori = colors[k] 
         
-        if(plotcolor):                
-            plt.text(X[i, 0], X[i, 1], str(y[i])[0], color=colori,
-                     fontdict={'weight': 'bold', 'size': 8})
+        if(plotcolor):          
+            plotlabel = [s[0] for s in y[i].split('_')]
+            plt.text(X[i, 0], X[i, 1], '.', color=colori, # optimonal label = ''.join(plotlabel)
+                     fontdict={'weight': 'bold', 'size': 24})
         else:
             greycolor = plt.cm.Accent(1)    
             plt.text(X[i, 0], X[i, 1], '.', color=greycolor,
-                         fontdict={'weight': 'bold', 'size': 10})
+                         fontdict={'weight': 'bold', 'size': 24})
+
+    ax.set_xlim(-0.1,1.1)
+    ax.set_ylim(-0.1,1.1)
+    if title is not None:
+        plt.title(title)
+
+def plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, ax, title=None, legend=True):
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib import offsetbox
+    from matplotlib.offsetbox import TextArea, AnnotationBbox
+    
+    x_min, x_max = np.min(Z_tsne, 0), np.max(Z_tsne, 0)
+    Z_tsne = (Z_tsne - x_min) / (x_max - x_min)
+
+    # process labels 
+    classes = [str(c) for c in np.unique(named_y)]
+    classes.remove('K_N/A_N/A')
+    colors=plt.cm.viridis(np.linspace(0,1,len(classes))) # plt.cm.gist_rainbow
+    c_patchs = []
+    greyc_U = np.array([0.5,0.5,0.5,0.5])
+    for k in range(len(classes)):
+            c_patchs.append(mpatches.Patch(color=colors[k], label=classes[k]))
+
+    for i in range(Z_tsne.shape[0]):
+        for k in range(len(classes)):
+            if str(named_y[i])==classes[k]: 
+                colori = colors[k]      
+        if(i<202):
+            plt.text(Z_tsne[i, 0], Z_tsne[i, 1], str(named_y[i])[0], color=colori,
+                     fontdict={'weight': 'bold', 'size': 8})
+        else: 
+            if(str(named_y[i])=='K_N/A_N/A'):
+                #print('{}..{}'.format(i,str(named_y[i])))
+                plt.text(Z_tsne[i, 0], Z_tsne[i, 1], '.', color=greyc_U,
+                     fontdict={'weight': 'bold', 'size': 24}) 
+                     
+            elif(str(named_y[i])[0]!='K'):
+                plt.text(Z_tsne[i, 0], Z_tsne[i, 1], str(named_y[i])[0], color=colori,
+                     fontdict={'weight': 'bold', 'size': 8})
+            else: 
+                #print('{}..{}'.format(i,str(named_y[i])))
+                plt.text(Z_tsne[i, 0], Z_tsne[i, 1], '.', color=colori,
+                         fontdict={'weight': 'bold', 'size': 24})
+            
+    if(legend):
+        c_patchs.append(mpatches.Patch(color=greyc_U, label='unknown'))
+        plt.legend(handles=c_patchs, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':4})
+    
 
     ax.set_xlim(-0.1,1.1)
     ax.set_ylim(-0.1,1.1)
@@ -293,119 +349,325 @@ def plot_embedding(X, y, ax, title=None, legend=True, plotcolor=True):
         plt.title(title)
         
         
-def visualize_graph_ndMRIdata(roi_id, typenxg, colorlegend):
+def plot_embedding_unsuper(Z_tsne, named_y, ax, title=None, legend=True):
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib import offsetbox
+    from matplotlib.offsetbox import TextArea, AnnotationBbox
+    
+    x_min, x_max = np.min(Z_tsne, 0), np.max(Z_tsne, 0)
+    Z_tsne = (Z_tsne - x_min) / (x_max - x_min)
+
+    # process labels 
+    classes = [str(c) for c in np.unique(named_y)]
+    #classes.remove('K_N/A')
+    colors=plt.cm.viridis(np.linspace(0,1,len(classes))) # plt.cm.gist_rainbow
+    c_patchs = []
+    greyc_U = np.array([0.5,0.5,0.5,0.5])
+    for k in range(len(classes)):
+            c_patchs.append(mpatches.Patch(color=colors[k], label=classes[k]))
+
+    for i in range(Z_tsne.shape[0]):
+        for k in range(len(classes)):
+            if str(named_y[i])==classes[k]: 
+                colori = colors[k]      
+        if(i<202):
+            plt.text(Z_tsne[i, 0], Z_tsne[i, 1], str(named_y[i])[0], color=colori,
+                     fontdict={'weight': 'bold', 'size': 8})
+        else: 
+            if(str(named_y[i])=='K_N/A'):
+                #print('{}..{}'.format(i,str(named_y[i])))
+                plt.text(Z_tsne[i, 0], Z_tsne[i, 1], '.', color=greyc_U,
+                     fontdict={'weight': 'bold', 'size': 24}) 
+                     
+            elif(str(named_y[i])[0]!='K'):
+                plt.text(Z_tsne[i, 0], Z_tsne[i, 1], str(named_y[i])[0], color=colori,
+                     fontdict={'weight': 'bold', 'size': 8})
+            else: 
+                #print('{}..{}'.format(i,str(named_y[i])))
+                plt.text(Z_tsne[i, 0], Z_tsne[i, 1], '.', color=colori,
+                         fontdict={'weight': 'bold', 'size': 24})
+            
+    if(legend):
+        c_patchs.append(mpatches.Patch(color=greyc_U, label='unknown'))
+        plt.legend(handles=c_patchs, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':10})
+    
+
+    ax.set_xlim(-0.1,1.1)
+    ax.set_ylim(-0.1,1.1)
+    if title is not None:
+        plt.title(title)
+ 
+def plot_embedding_unsuper_wFU(Z_tsne, y_tsne, ax, title=None, legend=True, withClustersImg=True):
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib import offsetbox
+    from matplotlib.offsetbox import TextArea, AnnotationBbox
+    
+    x_min, x_max = np.min(Z_tsne, 0), np.max(Z_tsne, 0)
+    Z_tsne = (Z_tsne - x_min) / (x_max - x_min)
+
+    # process labels 
+    classes = [str(c) for c in np.unique(y_tsne)]
+    #classes.remove('K_N/A')
+    colors=plt.cm.viridis(np.linspace(0,1,len(classes))) # plt.cm.gist_rainbow
+    c_patchs = []
+    greyc_U = np.array([0.5,0.5,0.5,0.5])
+    for k in range(len(classes)):
+        if(str(classes[k])!='FU'):
+            c_patchs.append(mpatches.Patch(color=colors[k], label=classes[k]))
+        else:
+            c_patchs.append(mpatches.Patch(color=greyc_U, label='unknown'))
+
+    for i in range(Z_tsne.shape[0]):
+        for k in range(len(classes)):
+            if str(y_tsne[i])==classes[k]: 
+                colori = colors[k]     
+                
+        if(str(y_tsne[i])!='FU'):
+            plt.text(Z_tsne[i, 0], Z_tsne[i, 1], str(y_tsne[i]), color=colori,
+                     fontdict={'weight': 'bold', 'size': 10})
+        else:        
+            #print('{}..{}'.format(i,str(named_y[i])))
+            plt.text(Z_tsne[i, 0], Z_tsne[i, 1], '.', color=greyc_U,
+                 fontdict={'weight': 'bold', 'size': 24}) 
+                     
+            
+    if(legend):
+        plt.legend(handles=c_patchs, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':14})
+    
+    if(withClustersImg):
+        # plot closets image to cluster centroid: one per class
+        from matplotlib.offsetbox import TextArea, DrawingArea, OffsetImage, AnnotationBbox
+        tmm = TMM(n_components=5, alpha=1.0)
+        tmm.fit(Z_tsne)
+        
+        l_clusters = []
+        Z_ind_clusters = []
+        q = tmm.transform(Z_tsne)
+        num_clusters=5
+        for ind in range(num_clusters):
+            # select each cluster
+            l = [ i for i in xrange(Z_tsne.shape[0]) if q[i].argmax() == ind ]
+            Z_ind = Z_tsne[l,:]
+            l_clusters.append(l)
+            Z_ind_clusters.append(Z_ind)
+            
+            # plot            
+            ind_centroids = Z_ind.mean(axis=0)
+            ax.annotate('cluster_'+str(ind), xy=(ind_centroids[0], ind_centroids[1]),
+                xytext=(0.95-1.0*ind/num_clusters, 0.90),
+                xycoords='data',
+                textcoords="data",
+                arrowprops=dict(arrowstyle="->"))
+
+    ax.set_xlim(-0.1,1.1)
+    ax.set_ylim(-0.1,1.1)
+    if title is not None:
+        plt.title(title) 
+    
+    return l_clusters, Z_ind_clusters
+
+        
+def visualize_graph_ndMRIdata(typenxg, colorlegend):
     '''
     # Construct img dictionary calling visualize_graph_ndMRIdata(roi_id) per roi_id
     from utilities import visualize_graph_ndMRIdata
-    for roi_id in range(1,len(nxGdata)+1):
-        visualize_graph_ndMRIdata(roi_id, typenxg='MST', colorlegend=False)
+    # to run    
+    visualize_graph_ndMRIdata(typenxg='DEL', colorlegend=True)
+    visualize_graph_ndMRIdata(typenxg='MST', colorlegend=True)
     '''
-    import glob
+    import glob, sys, os
     import six.moves.cPickle as pickle
     import gzip
     import SimpleITK as sitk
     import networkx as nx
     from mpl_toolkits.axes_grid1 import make_axes_locatable
+    from sqlalchemy.orm import sessionmaker, joinedload_all
+    from sqlalchemy import create_engine
+    from sqlalchemy.ext.declarative import declarative_base
+    from sqlalchemy.orm import sessionmaker
+    info_path = 'Z://Cristina//Section3//NME_DEC//imgFeatures' 
+    sys.path = [info_path] + sys.path
+    import localdatabase
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt 
 
     ################################### 
     # to visualize graphs and MRI data
     ###################################
-    graphs_path = 'Z:\\Cristina\\Section3\\breast_MR_NME_pipeline\\processed_NMEs'
-    # to read 4th post-C registered MRI to pre-contrast
-    processed_path = r'Z:\Cristina\Section3\breast_MR_NME_pipeline\processed_data'
+    graphs_path = 'Z:\\Cristina\\Section3\\NME_DEC\\imgFeatures\\processed_NMEs'
+    
+    lesion_id = 1
+    while ( lesion_id <= 1232 ) :
+        ###### 1) Querying Research database for clinical, pathology, radiology data         
+        print "Executing SQL local connection database..."
+        # configure Session class with desired options
+        Session = sessionmaker()
+        queryengine = create_engine('sqlite:///Z:\\Cristina\\Section3\\NME_DEC\\imgFeatures\\NME_forBIRADSdesc\\nonmass_roirecords.db', echo=False) # now on, when adding new cases
+        Session = sessionmaker()
+        Session.configure(bind=queryengine)  # once engine is available
+        session = Session() #instantiate a Session
 
-    ###### 1) Querying Research database for clinical, pathology, radiology data
-    #roi_id = nxGdata[nxGdata['roi_id']==1].iloc[0]['roi_id']
-    
-    # get lesion info from database  
-    localdata = Querylocal()
-    dflesion  = localdata.queryby_roid(roi_id)
-    
-    nmlesion_record = pd.Series(dflesion.Nonmass_record.__dict__)       
-    lesion_record = pd.Series(dflesion.Lesion_record.__dict__)
-    roi_record = pd.Series(dflesion.ROI_record.__dict__)
-    #lesion_id = lesion_record['lesion_id']
-    StudyID = lesion_record['cad_pt_no_txt']
-    AccessionN = lesion_record['exam_a_number_txt']
-    DynSeries_id = nmlesion_record['DynSeries_id'] 
-    roiLabel = roi_record['roi_label']
-    zslice = int(roi_record['zslize'])
-    p1 = roi_record['patch_diag1']
-    patch_diag1 = p1[p1.find("(")+1:p1.find(")")].split(',')
-    patch_diag1 = [float(p) for p in patch_diag1]
-    p2 = roi_record['patch_diag2']
-    patch_diag2 = p2[p2.find("(")+1:p2.find(")")].split(',')
-    patch_diag2 = [float(p) for p in patch_diag2]    
-    ext_x = [int(ex) for ex in [np.min([patch_diag1[0],patch_diag2[0]])-20,np.max([patch_diag1[0],patch_diag2[0]])+20] ] 
-    ext_y = [int(ey) for ey in [np.min([patch_diag1[1],patch_diag2[1]])-20,np.max([patch_diag1[1],patch_diag2[1]])+20] ] 
-    
-    ###### 2) Accesing mc images, prob maps, gt_lesions and breast masks
-    precontrast_id = int(DynSeries_id) 
-    DynSeries_nums = [str(n) for n in range(precontrast_id,precontrast_id+5)]
-
-    print "Reading MRI 4th volume..."
-    try:
-        #the output mha:lesionid_patientid_access#_series#@acqusionTime.mha
-        DynSeries_filename = '{}_{}_{}'.format(StudyID.zfill(4),AccessionN,DynSeries_nums[4] )
-        glob_result = glob.glob(os.path.join(processed_path,DynSeries_filename+'*')) 
-        if glob_result != []:
-            filename = glob_result[0]
-        # read Volumnes
-        mriVolDICOM = sitk.ReadImage(filename)
-        mri4th = sitk.GetArrayFromImage(sitk.Cast(mriVolDICOM,sitk.sitkFloat32)) 
-     
-    except:
-        logger.info('   failed: locating dynSeries w motion_correction!')
-        roi_id = roi_id+1
-        return -1
-    
-    ###### 3) load DEL and MST graph object into memory
-    if(typenxg=='DEL'):
-        try:
-            with gzip.open( os.path.join(graphs_path,'{}_{}_{}_{}_FacesTriang_lesion_nxgraph.pklz'.format(str(roi_id),StudyID.zfill(4),AccessionN,roiLabel)), 'rb') as f:
-                nxGraph = pickle.load(f)
-        except:
-            filegraph = glob.glob( os.path.join(graphs_path,'{}_{}_{}_*_FacesTriang_lesion_*'.format(str(roi_id),StudyID.zfill(4),AccessionN) ))
-            with gzip.open( filegraph[0], 'rb') as f:
-                nxGraph = pickle.load(f)
-        nxGraph_name = 'DEL_'+str(roi_id)
+        # perform query
+        ############# by lesion id
+        lesion = session.query(localdatabase.Lesion_record, localdatabase.Radiology_record, localdatabase.ROI_record).\
+            filter(localdatabase.Radiology_record.lesion_id==localdatabase.Lesion_record.lesion_id).\
+            filter(localdatabase.ROI_record.lesion_id==localdatabase.Lesion_record.lesion_id).\
+            filter(localdatabase.Lesion_record.lesion_id == str(lesion_id)).options(joinedload_all('*')).all()
+        # print results
+        if not lesion:
+            print "lesion is empty"
+            lesion_id = lesion_id+1
+            continue
         
-    if(typenxg=='MST'):
-        try:
-            with gzip.open( os.path.join(graphs_path,'{}_{}_{}_{}_MST_lesion_nxgraph.pklz'.format(str(roi_id),StudyID.zfill(4),AccessionN,roiLabel)), 'rb') as f:
-                nxGraph = pickle.load(f)
-        except:
-            filegraph = glob.glob( os.path.join(graphs_path,'{}_{}_{}_*_MST_*'.format(str(roi_id),StudyID.zfill(4),AccessionN) ))
-            with gzip.open( filegraph[0], 'rb') as f:
-                nxGraph = pickle.load(f)
-        nxGraph_name = 'MST_'+str(roi_id)
-                   
-    ###### 4) plot MRI + graph
-    # The triangles in parameter space determine which x, y, z points are connected by an edge
-    fig, ax = plt.subplots(dpi=200)   
-    # show MRI slice
-    ax.imshow(mri4th[zslice,:,:], cmap=plt.cm.gray)
-    ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
-     # draw
-    MST_nodeweights = [d['weight'] for (u,v,d) in nxGraph.edges(data=True)]
-    MST_pos = np.asarray([p['pos'] for (u,p) in nxGraph.nodes(data=True)])
-
-    nxg = nx.draw_networkx_edges(nxGraph, MST_pos, ax=ax, edge_color=MST_nodeweights, edge_cmap=plt.cm.inferno, 
-                             edge_vmin=-0.01,edge_vmax=2.5, width=1.5)
-    ax.set_adjustable('box-forced')
-    ax.get_xaxis().set_visible(False)                             
-    ax.get_yaxis().set_visible(False)
-    
-    # add color legend
-    if(colorlegend):
-        v = np.linspace(-0.01, 2.5, 10, endpoint=True)     
-        divider = make_axes_locatable(ax)
-        caxEdges = divider.append_axes("right", size="20%", pad=0.05)
-        plt.colorbar(nxg, cax=caxEdges, ticks=v) 
-
-    # save
-    fig.savefig('figs//'+nxGraph_name+'.png', bbox_inches='tight')    
-    plt.close()
+        lesion = lesion[0]
+        session.close()
+        
+        MorNMcase = []; cond = [];          
+        is_mass = list(lesion.Lesion_record.mass_lesion)
+        if(is_mass):
+            print "MASS"
+            cond = 'mass'
+            mass = pd.Series(is_mass[0])
+            mass_Case =  pd.Series(mass[0].__dict__)
+            print(mass_Case) 
+            # decide if it's a mass or nonmass
+            MorNMcase = mass_Case
+            
+        is_nonmass = list(lesion.Lesion_record.nonmass_lesion)
+        if(is_nonmass):
+            print "NON-MASS"
+            cond = 'nonmass'
+            nonmass = pd.Series(is_nonmass[0])
+            nonmass_Case =  pd.Series(nonmass[0].__dict__)
+            print(nonmass_Case) 
+            # decide if it's a mass or nonmass
+            MorNMcase = nonmass_Case
+            
+        # first collect only non-masses
+        if(cond == 'nonmass'):
+            # lesion frame       
+            lesion_record = pd.Series(lesion.Lesion_record.__dict__)
+            roi_record = pd.Series(lesion.ROI_record.__dict__)
+            nmlesion_record = pd.Series(lesion_record['nonmass_lesion'][0].__dict__)       
+       
+            #lesion_id = lesion_record['lesion_id']
+            StudyID = lesion_record['cad_pt_no_txt']
+            AccessionN = lesion_record['exam_a_number_txt']
+            DynSeries_id = nmlesion_record['DynSeries_id'] 
+            roiLabel = roi_record['roi_label']
+            zslice = int(roi_record['zslice'])
+            p1 = roi_record['patch_diag1']
+            patch_diag1 = p1[p1.find("(")+1:p1.find(")")].split(',')
+            patch_diag1 = [float(p) for p in patch_diag1]
+            p2 = roi_record['patch_diag2']
+            patch_diag2 = p2[p2.find("(")+1:p2.find(")")].split(',')
+            patch_diag2 = [float(p) for p in patch_diag2]    
+            ext_x = [int(ex) for ex in [np.min([patch_diag1[0],patch_diag2[0]])-20,np.max([patch_diag1[0],patch_diag2[0]])+20] ] 
+            ext_y = [int(ey) for ey in [np.min([patch_diag1[1],patch_diag2[1]])-20,np.max([patch_diag1[1],patch_diag2[1]])+20] ] 
+        
+            ###### 2) Accesing mc images, prob maps, gt_lesions and breast masks
+            precontrast_id = int(DynSeries_id) 
+            DynSeries_nums = [str(n) for n in range(precontrast_id,precontrast_id+5)]
+            
+            if(lesion_id<=636):
+                # to read 4th post-C registered MRI to pre-contrast
+                DICOM_path = r'Z:\Breast\DICOMS'         
+                print "Reading MRI 4th volume..."
+                try:
+                    #the output mha:lesionid_patientid_access#_series#@acqusionTime.mha
+                    DynSeries_filename = '{}\\{}\\{}'.format(StudyID.zfill(4),AccessionN,DynSeries_nums[4] )
+                    DynSeries4th_path = os.path.join(DICOM_path, DynSeries_filename)
+                    print "Reading DynSeries4th_images..." 
+                    print DynSeries4th_path
+                    
+                    reader = sitk.ImageSeriesReader()
+                    DynSeries4th_UIDs = reader.GetGDCMSeriesIDs(DynSeries4th_path)
+                    DynSeries4th_filenames = reader.GetGDCMSeriesFileNames(DynSeries4th_path, DynSeries4th_UIDs[0])
+                    reader.SetFileNames(DynSeries4th_filenames)
+                    DynSeries4th = reader.Execute()
+                    mri4th = sitk.GetArrayFromImage(sitk.Cast(DynSeries4th,sitk.sitkFloat32)) 
+                 
+                except:
+                    print('   failed: locating dynSeries!')
+                    lesion_id = lesion_id+1
+                    return -1              
+            else:
+                # to read 4th post-C registered MRI to pre-contrast
+                DICOM_path = r'Z:\Cristina\Section3\Breastdata'
+                print "Reading MRI 4th volume..."
+                try:
+                    #the output mha:lesionid_patientid_access#_series#@acqusionTime.mha
+                    DynSeries_filename = '{}\\{}\\{}'.format(str(int(StudyID)),AccessionN,DynSeries_nums[4] )
+                    DynSeries4th_path = os.path.join(DICOM_path, DynSeries_filename)
+                    print "Reading DynSeries4th_images..." 
+                    print DynSeries4th_path
+                    
+                    reader = sitk.ImageSeriesReader()
+                    DynSeries4th_UIDs = reader.GetGDCMSeriesIDs(DynSeries4th_path)
+                    DynSeries4th_filenames = reader.GetGDCMSeriesFileNames(DynSeries4th_path, DynSeries4th_UIDs[0])
+                    reader.SetFileNames(DynSeries4th_filenames)
+                    DynSeries4th = reader.Execute()
+                    mri4th = sitk.GetArrayFromImage(sitk.Cast(DynSeries4th,sitk.sitkFloat32)) 
+                 
+                except:
+                    print('   failed: locating dynSeries!')
+                    lesion_id = lesion_id+1
+                    return -1
+          
+            ###### 3) load DEL and MST graph object into memory
+            if(typenxg=='DEL'):
+                try:
+                    with gzip.open( os.path.join(graphs_path,'{}_{}_{}_FacesTriang_lesion_nxgraph.pklz'.format(str(lesion_id),StudyID.zfill(4),AccessionN)), 'rb') as f:
+                        nxGraph = pickle.load(f)
+                except:
+                    filegraph = glob.glob( os.path.join(graphs_path,'{}_{}_{}_*_FacesTriang_lesion_*'.format(str(lesion_id),StudyID.zfill(4),AccessionN) ))
+                    with gzip.open( filegraph[0], 'rb') as f:
+                        nxGraph = pickle.load(f)
+                nxGraph_name = 'DEL_'+str(lesion_id)
+                
+            if(typenxg=='MST'):
+                try:
+                    with gzip.open( os.path.join(graphs_path,'{}_{}_{}_MST_lesion_nxgraph.pklz'.format(str(lesion_id),StudyID.zfill(4),AccessionN)), 'rb') as f:
+                        nxGraph = pickle.load(f)
+                except:
+                    filegraph = glob.glob( os.path.join(graphs_path,'{}_{}_{}_*_MST_*'.format(str(lesion_id),StudyID.zfill(4),AccessionN) ))
+                    with gzip.open( filegraph[0], 'rb') as f:
+                        nxGraph = pickle.load(f)
+                nxGraph_name = 'MST_'+str(lesion_id)
+                           
+            ###### 4) plot MRI + graph
+            # The triangles in parameter space determine which x, y, z points are connected by an edge
+            fig, ax = plt.subplots(dpi=200)   
+            # show MRI slice 
+            ax.imshow(mri4th[zslice,:,:], cmap=plt.cm.gray)
+            ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
+             # draw
+            MST_nodeweights = [d['weight'] for (u,v,d) in nxGraph.edges(data=True)]
+            MST_pos = np.asarray([p['pos'] for (u,p) in nxGraph.nodes(data=True)])
+        
+            nxg = nx.draw_networkx_edges(nxGraph, MST_pos, ax=ax, edge_color=MST_nodeweights, edge_cmap=plt.cm.inferno, 
+                                     edge_vmin=-0.01,edge_vmax=2.5, width=1.5)
+                                                
+            ax.set_adjustable('box-forced')
+            ax.get_xaxis().set_visible(False)                             
+            ax.get_yaxis().set_visible(False)
+            
+            # add color legend
+            if(colorlegend):
+                v = np.linspace(-0.01, 2.5, 10, endpoint=True)     
+                divider = make_axes_locatable(ax)
+                caxEdges = divider.append_axes("right", size="20%", pad=0.05)
+                plt.colorbar(nxg, cax=caxEdges, ticks=v) 
+        
+            # save
+            fig.savefig('figs//'+nxGraph_name+'.png', bbox_inches='tight')    
+            plt.close()
+            
+        # continue
+        lesion_id = lesion_id+1
 
     return
 
@@ -619,3 +881,357 @@ def visualize_Zlatent_NN_fortsne_id(Z_tsne, y_tsne, tsne_id, saveFigs=False):
    
     return pdNN    
         
+def read_nxGwimg_features():
+    try:
+        import cPickle as pickle
+    except:
+        import pickle
+    import gzip
+
+    ## 1) read in the datasets both all NME (to do pretraining)
+    NME_nxgraphs = r'Z:\Cristina\Section3\NME_DEC\imgFeatures\NME_nxgraphs'
+    # start by loading nxGdatafeatures
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_wFU.pklz'), 'rb') as fin:
+        nxGdatafeatures = pickle.load(fin)
+        
+    with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_dynamic_wFU.pklz'), 'rb') as fin:
+        allNMEs_dynamic = pickle.load(fin)
+        
+    with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_morphology_wFU.pklz'), 'rb') as fin:
+        allNMEs_morphology = pickle.load(fin)        
+        
+    with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_texture_wFU.pklz'), 'rb') as fin:
+        allNMEs_texture = pickle.load(fin)
+        
+    with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_stage1_wFU.pklz'), 'rb') as fin:
+        allNMEs_stage1 = pickle.load(fin) 
+        
+                     
+    # to load SERw matrices for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_allNMEs_25binsize_wFU.pklz'), 'rb') as fin:
+        alldiscrSERcounts = pickle.load(fin)
+    
+    # to load discrall_dict dict for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_allNMEs_10binsize_wFU.pklz'), 'rb') as fin:
+        discrall_dict_allNMEs = pickle.load(fin)           
+       
+    #########
+    # exclude rich club bcs differnet dimenstions
+    delRC = discrall_dict_allNMEs.pop('discrallDEL_rich_club')
+    mstRC = discrall_dict_allNMEs.pop('discrallMST_rich_club')
+    delsC = discrall_dict_allNMEs.pop('discrallMST_scluster')
+    mstsC = discrall_dict_allNMEs.pop('discrallDEL_scluster')
+    ########## for nxGdiscfeatures.shape = (202, 420)
+    ds=discrall_dict_allNMEs.pop('DEL_dassort')
+    ms=discrall_dict_allNMEs.pop('MST_dassort')
+    # normalize 0-1    
+    x_min, x_max = np.min(ds, 0), np.max(ds, 0)
+    ds = (ds - x_min) / (x_max - x_min)
+    x_min, x_max = np.min(ms, 0), np.max(ms, 0)
+    ms = (ms - x_min) / (x_max - x_min)
+    
+    ## concatenate dictionary items into a nd array 
+    ## normalize per x
+    normgdiscf = []
+    for fname,fnxg in discrall_dict_allNMEs.iteritems():
+        print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
+        x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
+        x_max[x_max==0]=1.0e-07
+        fnxg = (fnxg - x_min) / (x_max - x_min)
+        normgdiscf.append( fnxg )
+        print(np.min(fnxg, 0))
+        print(np.max(fnxg, 0))
+        
+    
+    print 'Normalizing dynamic..  \n min={}, \n max={} \n'.format(np.min(allNMEs_dynamic, 0), np.max(allNMEs_dynamic, 0))
+    x_min, x_max = np.min(allNMEs_dynamic, 0), np.max(allNMEs_dynamic, 0)
+    x_max[x_max==0]=1.0e-07
+    normdynamic = (allNMEs_dynamic - x_min) / (x_max - x_min)
+    print(np.min(normdynamic, 0))
+    print(np.max(normdynamic, 0))
+    
+    print 'Normalizing morphology..  \n min={}, \n max={} \n'.format(np.min(allNMEs_morphology, 0), np.max(allNMEs_morphology, 0))
+    x_min, x_max = np.min(allNMEs_morphology, 0), np.max(allNMEs_morphology, 0)
+    x_max[x_max==0]=1.0e-07
+    normorpho = (allNMEs_morphology - x_min) / (x_max - x_min)
+    print(np.min(normorpho, 0))
+    print(np.max(normorpho, 0))
+        
+    print 'Normalizing texture..  \n min={}, \n max={} \n'.format(np.min(allNMEs_texture, 0), np.max(allNMEs_texture, 0))
+    x_min, x_max = np.min(allNMEs_texture, 0), np.max(allNMEs_texture, 0)
+    x_max[x_max==0]=1.0e-07
+    normtext = (allNMEs_texture - x_min) / (x_max - x_min)
+    print(np.min(normtext, 0))
+    print(np.max(normtext, 0))
+    
+    print 'Normalizing stage1..  \n min={}, \n max={} \n'.format(np.min(allNMEs_stage1, 0), np.max(allNMEs_stage1, 0))
+    x_min, x_max = np.min(allNMEs_stage1, 0), np.max(allNMEs_stage1, 0)
+    x_min[np.isnan(x_min)]=1.0e-07
+    x_max[np.isnan(x_max)]=1.0
+    normstage1 = (allNMEs_stage1 - x_min) / (x_max - x_min)
+    normstage1[np.isnan(normstage1)]=1.0e-07
+    print(np.min(normstage1, 0))
+    print(np.max(normstage1, 0))    
+        
+    nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
+    # append other univariate features  nxGdiscfeatures.shape  (798L, 422L)               
+    nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
+                                        ds.reshape(len(ds),1),
+                                        ms.reshape(len(ms),1)), axis=1)
+    # shape input 
+    combX_allNME = np.concatenate((alldiscrSERcounts, nxGdiscfeatures, normdynamic, normorpho, normtext, normstage1), axis=1)          
+    YnxG_allNME = [nxGdatafeatures['roi_id'].values,
+            nxGdatafeatures['roi_label'].values,
+            nxGdatafeatures['roiBIRADS'].values,
+            nxGdatafeatures['NME_dist'].values,
+            nxGdatafeatures['NME_int_enh'].values,
+            nxGdatafeatures['dce_init'].values,
+            nxGdatafeatures['dce_delay'].values,
+            nxGdatafeatures['curve_type'].values,
+            nxGdatafeatures['FUstatus'].values,
+            nxGdatafeatures['FUtime'].values]
+    
+    print('Loading {} all NME of size = {}'.format(combX_allNME.shape[0], combX_allNME.shape[1]) )
+    print('Loading all NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_allNME[0].shape[0])   )
+    
+    ################
+    ## 1-b) read in the datasets both all NME and filledbyBC (to do finetunning)
+    # to load nxGdatafeatures df for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_filledbyBC.pklz'), 'rb') as fin:
+        nxGdatafeatures = pickle.load(fin)
+    # to load SERw matrices for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_filledbyBC.pklz'), 'rb') as fin:
+        alldiscrSERcounts = pickle.load(fin)
+    # to load discrall_dict dict for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_filledbyBC.pklz'), 'rb') as fin:
+        discrall_dict_filledbyBC = pickle.load(fin)
+    
+    ########
+    # exclude rich club bcs differnet dimenstions
+    delRC = discrall_dict_filledbyBC.pop('discrallDEL_rich_club')
+    mstRC = discrall_dict_filledbyBC.pop('discrallMST_rich_club')
+    delsC = discrall_dict_filledbyBC.pop('discrallMST_scluster')
+    mstsC = discrall_dict_filledbyBC.pop('discrallDEL_scluster')
+    ########## for nxGdiscfeatures.shape = (202, 420)
+    ds=discrall_dict_filledbyBC.pop('DEL_dassort')
+    ms=discrall_dict_filledbyBC.pop('MST_dassort')
+    # normalize 0-1    
+    x_min, x_max = np.min(ds, 0), np.max(ds, 0)
+    ds = (ds - x_min) / (x_max - x_min)
+    x_min, x_max = np.min(ms, 0), np.max(ms, 0)
+    ms = (ms - x_min) / (x_max - x_min)
+    
+    ## concatenate dictionary items into a nd array 
+    ## normalize per x
+    normgdiscf = []
+    for fname,fnxg in discrall_dict_filledbyBC.iteritems():
+        print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
+        x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
+        x_max[x_max==0]=1.0e-07
+        fnxg = (fnxg - x_min) / (x_max - x_min)
+        normgdiscf.append( fnxg )
+        print(np.min(fnxg, 0))
+        print(np.max(fnxg, 0))
+        
+    nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
+    # append other univariate features  nxGdiscfeatures.shape  (798L, 422L)               
+    nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
+                                        ds.reshape(len(ds),1),
+                                        ms.reshape(len(ms),1)), axis=1)
+    # shape input 
+    combX_filledbyBC = np.concatenate((alldiscrSERcounts, nxGdiscfeatures), axis=1)       
+    YnxG_filledbyBC = [nxGdatafeatures['roi_id'].values,
+            nxGdatafeatures['roi_label'].values,
+            nxGdatafeatures['roiBIRADS'].values,
+            nxGdatafeatures['NME_dist'].values,
+            nxGdatafeatures['NME_int_enh'].values,
+            nxGdatafeatures['dce_init'].values,
+            nxGdatafeatures['dce_delay'].values,
+            nxGdatafeatures['curve_type'].values]
+    
+    print('Loading {} NME filled by BC of size = {}'.format(combX_filledbyBC.shape[0], combX_filledbyBC.shape[1]) )
+    print('Loading NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_filledbyBC[0].shape[0])   )
+
+    return combX_allNME, YnxG_allNME, combX_filledbyBC, YnxG_filledbyBC           
+    
+    
+    
+def read_onlynxG_features():
+    try:
+        import cPickle as pickle
+    except:
+        import pickle
+    import gzip
+
+    ## 1) read in the datasets both all NME (to do pretraining)
+    NME_nxgraphs = r'Z:\Cristina\Section3\NME_DEC\imgFeatures\NME_nxgraphs'
+    # start by loading nxGdatafeatures
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures.pklz'), 'rb') as fin:
+        nxGdatafeatures = pickle.load(fin)
+                     
+    # to load SERw matrices for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_allNMEs_25binsize.pklz'), 'rb') as fin:
+        alldiscrSERcounts = pickle.load(fin)
+    
+    # to load discrall_dict dict for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_allNMEs_10binsize.pklz'), 'rb') as fin:
+        discrall_dict_allNMEs = pickle.load(fin)           
+   
+    #########
+    # exclude rich club bcs differnet dimenstions
+    delRC = discrall_dict_allNMEs.pop('discrallDEL_rich_club')
+    mstRC = discrall_dict_allNMEs.pop('discrallMST_rich_club')
+    delsC = discrall_dict_allNMEs.pop('discrallMST_scluster')
+    mstsC = discrall_dict_allNMEs.pop('discrallDEL_scluster')
+    ########## for nxGdiscfeatures.shape = (202, 420)
+    ds=discrall_dict_allNMEs.pop('DEL_dassort')
+    ms=discrall_dict_allNMEs.pop('MST_dassort')
+    # normalize 0-1    
+    x_min, x_max = np.min(ds, 0), np.max(ds, 0)
+    ds = (ds - x_min) / (x_max - x_min)
+    x_min, x_max = np.min(ms, 0), np.max(ms, 0)
+    ms = (ms - x_min) / (x_max - x_min)
+    
+    ## concatenate dictionary items into a nd array 
+    ## normalize per x
+    normgdiscf = []
+    for fname,fnxg in discrall_dict_allNMEs.iteritems():
+        print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
+        x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
+        x_max[x_max==0]=1.0e-07
+        fnxg = (fnxg - x_min) / (x_max - x_min)
+        normgdiscf.append( fnxg )
+        print(np.min(fnxg, 0))
+        print(np.max(fnxg, 0))
+        
+    nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
+    # append other univariate features  nxGdiscfeatures.shape  (798L, 422L)               
+    nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
+                                        ds.reshape(len(ds),1),
+                                        ms.reshape(len(ms),1)), axis=1)
+    # shape input 
+    combX_allNME = np.concatenate((alldiscrSERcounts, nxGdiscfeatures), axis=1)       
+    YnxG_allNME = [nxGdatafeatures['roi_id'].values,
+            nxGdatafeatures['roi_label'].values,
+            nxGdatafeatures['roiBIRADS'].values,
+            nxGdatafeatures['NME_dist'].values,
+            nxGdatafeatures['NME_int_enh'].values,
+            nxGdatafeatures['dce_init'].values,
+            nxGdatafeatures['dce_delay'].values,
+            nxGdatafeatures['curve_type'].values]
+    
+    print('Loading {} all NME of size = {}'.format(combX_allNME.shape[0], combX_allNME.shape[1]) )
+    print('Loading all NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_allNME[0].shape[0])   )
+    
+    ################
+    ## 1-b) read in the datasets both all NME and filledbyBC (to do finetunning)
+    # to load nxGdatafeatures df for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_filledbyBC.pklz'), 'rb') as fin:
+        nxGdatafeatures = pickle.load(fin)
+    # to load SERw matrices for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_filledbyBC.pklz'), 'rb') as fin:
+        alldiscrSERcounts = pickle.load(fin)
+    # to load discrall_dict dict for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_filledbyBC.pklz'), 'rb') as fin:
+        discrall_dict_filledbyBC = pickle.load(fin)
+    
+    ########
+    # exclude rich club bcs differnet dimenstions
+    delRC = discrall_dict_filledbyBC.pop('discrallDEL_rich_club')
+    mstRC = discrall_dict_filledbyBC.pop('discrallMST_rich_club')
+    delsC = discrall_dict_filledbyBC.pop('discrallMST_scluster')
+    mstsC = discrall_dict_filledbyBC.pop('discrallDEL_scluster')
+    ########## for nxGdiscfeatures.shape = (202, 420)
+    ds=discrall_dict_filledbyBC.pop('DEL_dassort')
+    ms=discrall_dict_filledbyBC.pop('MST_dassort')
+    # normalize 0-1    
+    x_min, x_max = np.min(ds, 0), np.max(ds, 0)
+    ds = (ds - x_min) / (x_max - x_min)
+    x_min, x_max = np.min(ms, 0), np.max(ms, 0)
+    ms = (ms - x_min) / (x_max - x_min)
+    
+    ## concatenate dictionary items into a nd array 
+    ## normalize per x
+    normgdiscf = []
+    for fname,fnxg in discrall_dict_filledbyBC.iteritems():
+        print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
+        x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
+        x_max[x_max==0]=1.0e-07
+        fnxg = (fnxg - x_min) / (x_max - x_min)
+        normgdiscf.append( fnxg )
+        print(np.min(fnxg, 0))
+        print(np.max(fnxg, 0))
+        
+    nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
+    # append other univariate features  nxGdiscfeatures.shape  (798L, 422L)               
+    nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
+                                        ds.reshape(len(ds),1),
+                                        ms.reshape(len(ms),1)), axis=1)
+    # shape input 
+    combX_filledbyBC = np.concatenate((alldiscrSERcounts, nxGdiscfeatures), axis=1)       
+    YnxG_filledbyBC = [nxGdatafeatures['roi_id'].values, # is lesion_id in database nonmass_roirecord
+            nxGdatafeatures['roi_label'].values,
+            nxGdatafeatures['roiBIRADS'].values,
+            nxGdatafeatures['NME_dist'].values,
+            nxGdatafeatures['NME_int_enh'].values,
+            nxGdatafeatures['dce_init'].values,
+            nxGdatafeatures['dce_delay'].values,
+            nxGdatafeatures['curve_type'].values]
+
+    print('Loading {} NME filled by BC of size = {}'.format(combX_filledbyBC.shape[0], combX_filledbyBC.shape[1]) )
+    print('Loading NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_filledbyBC[0].shape[0])   )
+                           
+    return combX_allNME, YnxG_allNME, combX_filledbyBC, YnxG_filledbyBC           
+
+
+
+def plot_ROC_kStratcv(data, datalabels):
+    ## calculate RFmodel ROC
+    # shuffle and split training and test sets
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.metrics import roc_curve, auc
+    from sklearn.model_selection import train_test_split
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import cross_val_score
+
+    skf = StratifiedKFold(n_splits=5, shuffle=True)
+    skf.get_n_splits(data, datalabels)
+    allAUCS = []
+    ally_score = []
+    ally_test_int = []        
+    for train_index, test_index in skf.split(data, datalabels):
+        #print("TRAIN:", train_index, "TEST:", test_index)
+        X_train, X_test = data[train_index], data[test_index]
+        y_train, y_test = datalabels[train_index], datalabels[test_index]
+        
+        # train RF model on stratitied kfold
+        RFmodel = RFmodel.fit(X_train, y_train)
+        y_score = RFmodel.predict_proba(X_test)
+        # make malignant class = 1 (positive), Benigng = -1
+        y_test_int = [-1 if l=='B' else 1 for l in y_test]
+        # pass y_scores as : array, shape = [n_samples] Target scores, can either be probability estimates of the positive class..
+        fpr, tpr, thrsh = roc_curve(y_test_int, y_score[:,1], pos_label=1)
+        roc_auc = auc(fpr, tpr)
+        allAUCS.append(roc_auc)
+        ally_score.append(y_score)
+        ally_test_int.append(y_test_int)
+
+    print 'mean all kcv AUC =  %0.2f' % np.mean(allAUCS)
+    print allAUCS
+    stack_ally_score = np.vstack(([ally_score[i] for i in range(len(ally_score))]))
+    stack_ally_test_int = np.hstack(([ally_test_int[i] for i in range(len(ally_test_int))]))
+    fpr, tpr, thrsh = roc_curve(stack_ally_test_int, stack_ally_score[:,1], pos_label=1)
+    print 'StratifiedKFold pooled held-out AUC =  %0.2f' %  auc(fpr, tpr)
+
+    plt.figure()
+    plt.plot(fpr, tpr, color='green',
+             lw=2, label='StratifiedKFold pooled held-out AUC =  %0.2f' %  auc(fpr, tpr))
+    plt.plot([0, 1], [0, 1], color='grey', lw=1, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('StratifiedKFold pooled held-out ROC validation')
+    plt.legend(loc="lower right")
+    plt.show()
+    #figscoresM.savefig(dec_model_load+os.sep+'StratifiedKFold_pooled_AUC_znum{}_numc{}_{}.pdf'.format(znum,num_centers,labeltype), bbox_inches='tight')    
