@@ -101,7 +101,7 @@ class DECModel(model.MXModel):
     def setup(self, X, num_centers, alpha, znum, save_to='dec_model'):
         # Read previously trained _SAE
         ae_model = AutoEncoderModel(self.xpu, [X.shape[1],500,500,2000,znum], pt_dropout=0.2)
-        ae_model.load( os.path.join(save_to,'SAE_zsize{}_Nbatch_wimgfeatures.arg'.format(str(znum))) ) #_Nbatch_wimgfeatures
+        ae_model.load( os.path.join(save_to,'SAE_zsize{}_wimgfeatures.arg'.format(str(znum))) ) #_Nbatch_wimgfeatures
         logging.log(logging.INFO, "Reading Autoencoder from file..: %s"%(os.path.join(save_to,'SAE_zsize{}_wimgfeatues.arg'.format(znum))) )
         self.ae_model = ae_model
         logging.log(logging.INFO, "finished reading Autoencoder from file..: ")
@@ -156,7 +156,7 @@ class DECModel(model.MXModel):
         # our model is trained by matching the soft assignment to the target distribution. 
         # To this end, we define our objective as a KL divergence loss between 
         # the soft assignments qi (pred) and the auxiliary distribution pi (label)
-        solver = Solver('sgd', momentum=0.6, wd=0.05, learning_rate=0.00125, lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.5))   ### original: 0.01, try1: Solver('sgd', momentum=0.9, wd=0.0, learning_rate=0.000125, lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.5))  try 2: Solver('sgd', momentum=0.6, wd=0.05, learning_rate=0.00125, lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.5)) 
+        solver = Solver('sgd', momentum=0.9, wd=0.0, learning_rate=0.01) # , lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.4)) #0.01
         def ce(label, pred):
             return np.sum(label*np.log(label/(pred+0.000001)))/label.shape[0]
         solver.set_metric(mx.metric.CustomMetric(ce))
@@ -171,7 +171,7 @@ class DECModel(model.MXModel):
         figprogress = plt.figure(figsize=(20, 15))  
         print 'Batch_size = %f'% self.best_args['batch_size']
         print 'update_interval = %f'%  update_interval
-        self.best_args['plot_interval'] = int(5*update_interval)
+        self.best_args['plot_interval'] = int(20*update_interval)
         print 'plot_interval = %f'%  self.best_args['plot_interval']
         self.maxAcc = 0.0
         
@@ -183,7 +183,7 @@ class DECModel(model.MXModel):
                 self.dec_op.forward([z, args['dec_mu'].asnumpy()], [p])
                 # the soft assignments qi (pred)
                 y_pred = p.argmax(axis=1)
-                #print np.std(np.bincount(y_dec_train)), np.bincount(y_dec_train)
+                print np.std(np.bincount(y_dec)), np.bincount(y_dec)
                 print np.std(np.bincount(y_pred)), np.bincount(y_pred)
                 
                 #####################
@@ -204,6 +204,111 @@ class DECModel(model.MXModel):
                 print "cvRF BorM Accuracy = %f " % Acc
                 print scores_BorM.tolist()
                 
+                # use only the filledbyBC examples (first 0-202 exaples)           
+                nme_dist_label = [lab.split('_')[1] for lab in self.best_args['named_y'][0:202]] 
+                nme_intenh_label = [lab.split('_')[2] for lab in self.best_args['named_y'][0:202]] 
+                # compute Z-space Accuracy
+                scores_dist = cross_val_score(RFmodel, z[0:202], nme_dist_label, cv=5)
+                print "cvRF nme_dist Accuracy = %f " % scores_dist.mean()
+                scores_intenh = cross_val_score(RFmodel, z[0:202], nme_intenh_label, cv=5)
+                print "cvRF nme_intenh Accuracy = %f " % scores_intenh.mean()
+                
+                #####################
+                # CALCULATE 5nn METRICS
+                #####################
+                labels = np.asarray(self.best_args['named_y'])
+                Z_embedding_tree = sklearn.neighbors.BallTree(z, leaf_size=4)     
+                # This finds the indices of 5 closest neighbors
+                nme_dist = ['Diffuse', 'Focal', 'Linear', 'MultipleRegions', 'Regional','Segmental']
+                nme_intenh = ['Clumped', 'ClusteredRing', 'Heterogeneous', 'Homogeneous','Stippled or punctate']
+                wnme_dist = np.zeros((len(nme_dist),len(nme_dist)), dtype=np.int64)
+                wnme_intenh = np.zeros((len(nme_intenh),len(nme_intenh)), dtype=np.int64)
+                BorM_diag = []; TP = []; TN = []; FP = []; FN = []; missed=[];
+                NME_descript_dist = []
+                NME_descript_intenh = []    
+                # count stattistics
+                for k in range(z.shape[0]):
+                    iclass = labels[k]
+                    dist, ind = Z_embedding_tree.query([z[k]], k=2)
+                    dist5nn, ind5nn = dist[k!=ind], ind[k!=ind]
+                    class5nn = labels[ind5nn]
+                    # compute DIAGNOSTIC ACC based on nme similar local neighborhood                    
+                    if(iclass.split('_')[0]!='K'):
+                        predBorM=[]
+                        predBorM.append( sum([lab.split('_')[0]=='M' for lab in class5nn]) )
+                        predBorM.append( sum([lab.split('_')[0]=='B' for lab in class5nn]) )
+                        predBorM.append( sum([lab.split('_')[0]=='K' for lab in class5nn]) )
+                        pred_BorM = [['M','B','K'][l] for l,pc in enumerate(predBorM) if pc>=max(predBorM) and max(predBorM)>0][0]
+                        # compute TP if M  
+                        if(pred_BorM!='K'):
+                            if(iclass.split('_')[0]==pred_BorM):
+                                BorM_diag.append(1)
+                                # confusino table
+                                if(iclass.split('_')[0]=='M'):
+                                    TP.append(1)
+                                if(iclass.split('_')[0]=='B'):
+                                    TN.append(1)    
+                            if(iclass.split('_')[0]!=pred_BorM):
+                                if(iclass.split('_')[0]=='M'):
+                                    FN.append(1)
+                                if(iclass.split('_')[0]=='B'):
+                                    FP.append(1)
+                        else:
+                            missed.append(1)
+
+                    if(k<=202 and iclass.split('_')[1]!='N/A'):
+                        # increment detections for final NME descriptor accuracy
+                        prednmed=[]
+                        prednmed.append( sum([lab.split('_')[1]=='Diffuse' for lab in class5nn]) )
+                        prednmed.append( sum([lab.split('_')[1]=='Focal' for lab in class5nn]) )
+                        prednmed.append( sum([lab.split('_')[1]=='Linear' for lab in class5nn]) )
+                        prednmed.append( sum([lab.split('_')[1]=='MultipleRegions' for lab in class5nn]) )
+                        prednmed.append( sum([lab.split('_')[1]=='Regional' for lab in class5nn]) )
+                        prednmed.append( sum([lab.split('_')[1]=='Segmental' for lab in class5nn]) )
+                        # predicion based on majority voting
+                        pred_nme_dist = [nme_dist[l] for l,pc in enumerate(prednmed) if pc>=max(prednmed) and max(prednmed)>0]    
+                        # compute NME ACC based on nme similar local neighborhood
+                        if(iclass.split('_')[1] in pred_nme_dist):
+                            NME_descript_dist.append(1)
+                            
+                    if(k<=202 and iclass.split('_')[2]!='N/A'):
+                        prednmeie=[]
+                        prednmeie.append( sum([lab.split('_')[2]=='Clumped' for lab in class5nn]) )
+                        prednmeie.append( sum([lab.split('_')[2]=='ClusteredRing' for lab in class5nn]) )
+                        prednmeie.append( sum([lab.split('_')[2]=='Heterogeneous' for lab in class5nn]) )
+                        prednmeie.append( sum([lab.split('_')[2]=='Homogeneous' for lab in class5nn]) )
+                        prednmeie.append( sum([lab.split('_')[2]=='Stippled or punctate' for lab in class5nn]) )                        
+                        # predicion based on majority voting
+                        pred_nme_intenh = [nme_intenh[l] for l,pc in enumerate(prednmeie) if pc>=max(prednmeie) and max(prednmeie)>0] 
+                        # compute NME ACC based on nme similar local neighborhoo
+                        if(iclass.split('_')[2] in pred_nme_intenh):
+                            NME_descript_intenh.append(1)
+                            
+                #####################
+                # collect stats
+                #####################
+                BorM_diag_Acc = sum(BorM_diag)/float(len(datalabels))
+                #Acc = BorM_diag_Acc
+                print"BorM_diag_Acc = %f " % BorM_diag_Acc
+                ## good if high
+                TPR = sum(TP)/float(sum(datalabels=='M'))
+                print"TPR = %f " % TPR
+                TNR = sum(TN)/float(sum(datalabels=='B'))
+                print"TNR = %f " % TNR
+                ##  bad if high
+                FPR = sum(FP)/float(sum(datalabels=='B'))
+                print"FPR = %f " % FPR
+                FNR = sum(FN)/float(sum(datalabels=='M'))
+                print"FNR = %f " % FNR
+                # good if reduces
+                missedR = sum(np.asarray(missed))/float(len(datalabels))
+                print"missedR = %f " % missedR
+                                
+                Acc5nn_nme_dist = sum(NME_descript_dist)/202.0
+                Acc5nn_nme_intenh = sum(NME_descript_intenh)/202.0
+                print"Acc5nn_nme_dist (DIST) = %f " % Acc5nn_nme_dist
+                print"Acc5nn_nme_intenh (INT_ENH) = %f " % Acc5nn_nme_intenh    
+                
                 if(i==0):
                     tsne = TSNE(n_components=2, perplexity=self.perplexity, learning_rate=self.learning_rate,
                                 init='pca', random_state=0, verbose=2, method='exact')
@@ -212,7 +317,7 @@ class DECModel(model.MXModel):
                     # plot initial z        
                     figinint = plt.figure()
                     axinint = figinint.add_subplot(1,1,1)
-                    plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, axinint, title='kmeans init tsne: Acc={}\n'.format(Acc), legend=True)
+                    plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, axinint, title='kmeans init tsne: Acc={}\n RF_nme_dist={}\n RF_intenh={}'.format(Acc,scores_dist.mean(),scores_intenh.mean()), legend=True)
                     figinint.savefig('{}//tsne_init_z{}_mu{}_{}.pdf'.format(save_to,self.best_args['znum'],self.best_args['num_centers'],labeltype), bbox_inches='tight')     
                     plt.close()                  
                     
@@ -227,7 +332,17 @@ class DECModel(model.MXModel):
                     self.best_args['pbestacci'] = p
                     self.best_args['zbestacci']  = z 
                     self.best_args['bestacci'].append( Acc )
+                    self.best_args['cvRF_nme_dist'] = scores_dist.mean()
+                    self.best_args['cvRF_nme_intenh'] = scores_intenh.mean()
                     self.best_args['dec_mu'][:] = args['dec_mu'].asnumpy()
+                    self.best_args['BorM_diag_Acc'] = BorM_diag_Acc
+                    self.best_args['TPR'] = TPR
+                    self.best_args['TNR'] = TNR
+                    self.best_args['FPR'] = FPR
+                    self.best_args['FNR'] = FNR
+                    self.best_args['missedR'] = missedR
+                    self.best_args['Acc5nn_nme_dist'] = Acc5nn_nme_dist
+                    self.best_args['Acc5nn_nme_intenh'] = Acc5nn_nme_intenh
                 
                 if(i>0 and i%self.best_args['plot_interval']==0 and self.ploti<=15): 
                     # Visualize the progression of the embedded representation in a subsample of data
@@ -258,7 +373,7 @@ class DECModel(model.MXModel):
 
         # start solver
         solver.set_iter_start_callback(refresh)
-        solver.set_monitor(Monitor(24))
+        solver.set_monitor(Monitor(20))
         solver.solve(self.xpu, self.loss, args, self.args_grad, None,
                      train_iter, 0, 1000000000, {}, False)
         self.end_args = args
@@ -275,7 +390,7 @@ class DECModel(model.MXModel):
         tsne = TSNE(n_components=2, perplexity=self.perplexity, learning_rate=self.learning_rate,
              init='pca', random_state=0, verbose=2, method='exact')
         Z_tsne = tsne.fit_transform(self.best_args['zbestacci'])      
-        plot_embedding_unsuper_NMEdist_intenh(Z_tsne, self.best_args['named_y'], axfinal, title='final tsne: Acc={}\n'.format(self.best_args['bestacci'][-1]), legend=True)
+        plot_embedding_unsuper_NMEdist_intenh(Z_tsne, self.best_args['named_y'], axfinal, title='final tsne: Acc={}\n RF_nme_dist={}\n RF_intenh={}'.format(self.best_args['bestacci'][-1],self.best_args['cvRF_nme_dist'],self.best_args['cvRF_nme_intenh']), legend=True)
         figfinal.savefig('{}\\tsne_final_z{}_mu{}_{}.pdf'.format(save_to,self.best_args['znum'],self.best_args['num_centers'],labeltype), bbox_inches='tight')    
         plt.close()          
 
@@ -285,6 +400,16 @@ class DECModel(model.MXModel):
                     'pbestacci':self.best_args['pbestacci'],
                     'zbestacci':self.best_args['zbestacci'],
                     'dec_mubestacci':self.best_args['dec_mu'],
+                    'cvRF_nme_dist': self.best_args['cvRF_nme_dist'],
+                    'cvRF_nme_intenh': self.best_args['cvRF_nme_intenh'],
+                    'BorM_diag_Acc': self.best_args['BorM_diag_Acc'],
+                    'TPR': self.best_args['TPR'],
+                    'TNR': self.best_args['TNR'],
+                    'FPR': self.best_args['FPR'],
+                    'FNR': self.best_args['FNR'],
+                    'missedR': self.best_args['missedR'],
+                    'Acc5nn_nme_dist':self.best_args['Acc5nn_nme_dist'],
+                    'Acc5nn_nme_intenh':self.best_args['Acc5nn_nme_intenh'],
                     'y_pred': self.best_args['y_pred'],
                     'named_y': self.best_args['named_y'],
                     'classes':self.best_args['classes'],
@@ -371,13 +496,13 @@ if __name__ == '__main__':
     ######################
     ## 2) DEC using labeled cases
     ######################                                            
-    labeltype = 'classNME_wimgF' 
-    save_to = r'Z:\Cristina\Section3\NME_DEC\SAEmodels\decModel_gradDesc'
+    labeltype = 'roilabel_&NMEdist_wimgG' 
+    save_to = r'Z:\Cristina\Section3\NME_DEC\SAEmodels\decModel_exp5_wimgF_updated'
    
     #log
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
-    LOG_FILE_stdout = os.path.join(save_to, 'decModel_gradDesc_{}.txt'.format(labeltype))
+    LOG_FILE_stdout = os.path.join(save_to, 'decModel_exp5_wimgF_updated_{}.txt'.format(labeltype))
     #log to console    
     console_formatter = logging.Formatter('%(asctime)s %(message)s')
     #ch = logging.StreamHandler()
@@ -388,8 +513,9 @@ if __name__ == '__main__':
         
     # dfine num_centers according to clustering variable
     ## use y_dec to  minimizing KL divergence for clustering with known classes
-    ysup = ["{}_{}_{}".format(a, b, c) if b!='nan' else "{}_{}".format(a, c) for a, b, c in zip(YnxG_allNME[1], YnxG_allNME[2], YnxG_allNME[3])]
-    #ysup[range(combX_filledbyBC.shape[0])] = YnxG_filledbyBC[1]+'_'+YnxG_filledbyBC[3]+'_'+YnxG_filledbyBC[4] # +['_'+str(yl) for yl in YnxG_filledbyBC[3]]  
+    X = combX_allNME  
+    ysup = YnxG_allNME[1]+'_'+YnxG_allNME[3]+'_'+YnxG_allNME[4]
+    ysup[range(combX_filledbyBC.shape[0])] = YnxG_filledbyBC[1]+'_'+YnxG_filledbyBC[3]+'_'+YnxG_filledbyBC[4] # +['_'+str(yl) for yl in YnxG_filledbyBC[3]]  
     #ysup[range(combX_filledbyBC.shape[0])] = YnxG_filledbyBC[1]+'_'+YnxG_filledbyBC[3]
     ysup = ['K'+rl[1::] if rl[0]=='U' else rl for rl in ysup]
     roi_labels = YnxG_allNME[1]  
@@ -410,49 +536,71 @@ if __name__ == '__main__':
     # DEC
     ########################################################
     input_size = combX_allNME.shape[1]
-    latent_size = [input_size/rxf for rxf in [10,5]]
-    varying_mu = [int(np.round(var_mu)) for var_mu in np.linspace(3,10,8)]
+    latent_size = [input_size/rxf for rxf in [25,15,10,5]]
+    varying_mu = [int(np.round(var_mu)) for var_mu in np.linspace(5,20,16)] # 3,20,18 START AT 9
     
-    for znum in latent_size:
+    for num_centers in varying_mu:
         initAccuracy = []
-        cvRFZspaceAccuracy = []           
-        normalizedMI = []
-        cvRFOriginalXAccuracy = []
+        cvRFZspaceAccuracy = []
+        cvRFZspaceNME_DISTAcc = []
+        cvRFZspaceNME_INTENHAcc = []
         
+        BorM_diag_bestAcc = []
+        NME_DISTAcc = []
+        NME_INTENHAcc = []
+        normalizedMI = []
+        
+        cvRFOriginalXAccuracy = []
+        cvRFNME_DISTAcc = []
+        cvRFNME_INTENHAcc = []
         # to load a prevously DEC model
-        for num_centers in varying_mu: 
-            # batch normalization
-            sep = int(combX_allNME.shape[0]*0.10)
-            X_val = combX_allNME[:sep]
-            y_val = roi_labels[:sep]
-            X_train = combX_allNME[sep:]
-            y_dec_train = y_dec[sep:]
-            y_train = roi_labels[sep:]
-            batch_size = 125 
-            update_interval = 24 # approx. 4 epochs per update
-            #            if(num_centers==3 and znum==30):
-            #                continue
+        for znum in latent_size:
+            batch_size = 375
+            update_interval = 20
+            
+            if(znum<50 and num_centers==4):
+                continue
             
             #num_centers = len(classes)
             # Read autoencoder: note is not dependent on number of clusters just on z latent size
             print "Load autoencoder of znum = ",znum
             print "Training DEC num_centers = ",num_centers
             logger.info('Load autoencoder of znum = {}, mu = {} \n Training DEC'.format(znum,num_centers))
-            logger.info('DEC optimization using learnRate = {}, {} \n'.format(znum,num_centers))
-            dec_model = DECModel(mx.gpu(0), X_train, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
+            dec_model = DECModel(mx.cpu(), X, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
             logger.info('Tunning DEC batch_size ={}, alpha anheling={}'.format(batch_size,update_interval)) # orig paper 256*40 (10240) point for upgrade about 1/6 (N) of data
-            outdict = dec_model.cluster(X_train, y_dec_train, y_train, classes, batch_size, save_to, labeltype, update_interval) # 10 epochs# ~ per 1/3 of data 798/48=16 update twice per epoch ~ N/(batch size)=iterations to reach a full epochg
-            #
+            outdict = dec_model.cluster(X, y_dec, roi_labels, classes, batch_size, save_to, labeltype, update_interval) # 10 epochs# ~ per 1/3 of data 798/48=16 update twice per epoch ~ N/(batch size)=iterations to reach a full epochg
             logger.info('Finised trainining DEC...') 
-            print 'dec_model initAcc = {}'.format( outdict['initAcc'] )
-            logger.info('dec_model initAcc = {}'.format( outdict['initAcc'] ))
-
             print 'dec_model bestacci = {}'.format( outdict['bestacci'][-1] )
             logger.info('dec_model bestacci = {}'.format( outdict['bestacci'][-1] ))
+            print 'dec_model initAcc = {}'.format( outdict['initAcc'] )
+            logger.info('dec_model initAcc = {}'.format( outdict['initAcc'] ))
+            print 'cvRF_nme_dist= {}'.format( outdict['cvRF_nme_dist'] )
+            logger.info('cvRF_nme_dist = {}'.format( outdict['cvRF_nme_dist'] ))
+            print 'cvRF_nme_intenh = {}'.format( outdict['cvRF_nme_intenh'] )
+            logger.info('cvRF_nme_intenh = {}'.format( outdict['cvRF_nme_intenh'] ))
+            
+            print '5nn BorM_diag_Acc = {}'.format( outdict['BorM_diag_Acc'] )
+            logger.info('5nn BorM_diag_Acc = {}'.format( outdict['BorM_diag_Acc'] ))
+            print 'TPR = {}'.format( outdict['TPR'] )
+            logger.info('TPR = {}'.format( outdict['TPR'] ))
+            print 'TNR = {}'.format( outdict['TNR'] )
+            logger.info('TNR = {}'.format( outdict['TNR'] ))
+            print 'FPR = {}'.format( outdict['FPR'] )
+            logger.info('FPR = {}'.format( outdict['FPR'] ))
+            print 'FNR = {}'.format( outdict['FNR'] )
+            logger.info('FNR = {}'.format( outdict['FNR'] ))
+            print 'missedR = {}'.format( outdict['missedR'] )
+            logger.info('missedR = {}'.format( outdict['missedR'] ))
+    
             # save to plot as a function of znum        
             initAccuracy.append( outdict['initAcc'] )
             cvRFZspaceAccuracy.append( outdict['bestacci'][-1])
-          
+            cvRFZspaceNME_DISTAcc.append( outdict['cvRF_nme_dist'] )
+            cvRFZspaceNME_INTENHAcc.append( outdict['cvRF_nme_intenh'] )
+            BorM_diag_bestAcc.append( outdict['BorM_diag_Acc'] )
+            NME_DISTAcc.append( outdict['Acc5nn_nme_dist'] )
+            NME_INTENHAcc.append( outdict['Acc5nn_nme_intenh'] )
+       
             # save output results
             dec_args_keys = ['encoder_1_bias', 'encoder_3_weight', 'encoder_0_weight', 
             'encoder_0_bias', 'encoder_2_weight', 'encoder_1_weight', 
@@ -462,7 +610,6 @@ if __name__ == '__main__':
             args_save = {key: v for key, v in dec_model.best_args.items() if key not in dec_args_keys}
             dec_model = dec_args.copy()
             dec_model.update(args_save) 
-            fname = save_to+os.sep+'args_save_z{}_mu{}.arg'.format(znum,num_centers)
             with open(fname, 'w') as fout:
                 pickle.dump(args_save, fout)
             # save model saving params into a numpy array
@@ -498,18 +645,18 @@ if __name__ == '__main__':
             #####################
             # Calculate normalized MI: find the relative frequency of points in Wk and Cj
             #####################
-            N = X_train.shape[0]
+            N = X.shape[0]
             num_classes = len(np.unique(roi_labels)) # present but not needed during AE training
             roi_classes = np.unique(roi_labels)
-            y_train_roi_labels = np.asarray(y_train)
+            roi_labels = np.asarray(roi_labels)
             
             # extact embedding space
-            all_iter = mx.io.NDArrayIter({'data': X_train}, batch_size=X_train.shape[0], shuffle=False,
+            all_iter = mx.io.NDArrayIter({'data': X}, batch_size=X.shape[0], shuffle=False,
                                                       last_batch_handle='pad')   
             ## embedded point zi 
-            aDEC = DECModel(mx.cpu(), X_train, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
+            aDEC = DECModel(mx.cpu(), X, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
             mxdec_args = {key: mx.nd.array(v) for key, v in dec_args.items() if key != 'dec_mubestacci'}                           
-            zbestacci = model.extract_feature(aDEC.feature, mxdec_args, None, all_iter, X_train.shape[0], aDEC.xpu).values()[0]      
+            zbestacci = model.extract_feature(aDEC.feature, mxdec_args, None, all_iter, X.shape[0], aDEC.xpu).values()[0]      
             # orig paper 256*40 (10240) point for upgrade about 1/6 (N) of data
             #zbestacci = dec_model['zbestacci'] 
             pbestacci = np.zeros((zbestacci.shape[0], dec_model['num_centers']))
@@ -528,10 +675,10 @@ if __name__ == '__main__':
                 absWk[k] = np.sum(W==k)
                 for j in range(num_classes):
                     # find points of class j
-                    absCj[j] = np.sum(y_train_roi_labels==roi_classes[j])
+                    absCj[j] = np.sum(roi_labels==roi_classes[j])
                     # find intersection 
                     ptsk = W==k
-                    MLE_kj[k,j] = np.sum(ptsk[y_train_roi_labels==roi_classes[j]])
+                    MLE_kj[k,j] = np.sum(ptsk[roi_labels==roi_classes[j]])
             # if not assignment incluster
             absWk[absWk==0]=0.00001
             
@@ -553,13 +700,13 @@ if __name__ == '__main__':
             logger.info('dec_model NMI={}'.format(NMI))            
           
             ######## train an RF on ORIGINAL space Finally perform a cross-validation using RF
-            datalabels = y_train_roi_labels
-            Xdata = X_train[datalabels!='K',:]
-            ydatalabels = datalabels[datalabels!='K']
+            datalabels = YnxG_allNME[1]
+            data = X[datalabels!='K',:]
+            datalabels = datalabels[datalabels!='K']
             RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=500, random_state=0, verbose=1)
             # Evaluate a score by cross-validation
             # integer=5, to specify the number of folds in a (Stratified)KFold,
-            scores = cross_val_score(RFmodel, Xdata, ydatalabels, cv=5)
+            scores = cross_val_score(RFmodel, data, datalabels, cv=5)
             print "(cvRF Accuracy = %f " % scores.mean()      
             print scores.tolist()
             
@@ -568,6 +715,38 @@ if __name__ == '__main__':
             outdict['cvRFOriginalXAccuracy'] = scores.mean()                 
             logger.info('mean 5cv cv OriginalX RF_Accuracy ={}'.format( scores.mean() ))
             logger.info('all ={}'.format( scores.tolist() ))
+    
+              
+            ######## train an RF on ORIGINAL space Finally perform a cross-validation using RF   
+            datalabels = YnxG_filledbyBC[3]
+            data = combX_filledbyBC
+            RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=500, random_state=0, verbose=1)
+            # Evaluate a score by cross-validation
+            # integer=5, to specify the number of folds in a (Stratified)KFold,
+            scores = cross_val_score(RFmodel, data, datalabels, cv=5)
+            print "(cvRF OriginalX_nme_distAcc = %f " % scores.mean()      
+            print scores.tolist()
+            
+            #appends and logs
+            cvRFNME_DISTAcc.append(scores.mean())
+            outdict['cvRFOriginalX_nme_distAcc'] = scores.mean()                 
+            logger.info('mean 5cv OriginalX NME DIST RF_Accuracy ={}'.format( scores.mean() ))
+            logger.info('all ={}'.format( scores.tolist() ))
+            
+            ######## train an RF on ORIGINAL space Finally perform a cross-validation using RF   
+            datalabels = YnxG_filledbyBC[4]
+            data = combX_filledbyBC
+            RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=500, random_state=0, verbose=1)
+            # Evaluate a score by cross-validation
+            # integer=5, to specify the number of folds in a (Stratified)KFold,
+            scores = cross_val_score(RFmodel, data, datalabels, cv=5)
+            print "(cvRF OriginalX_nme_intenhcc = %f " % scores.mean()      
+            print scores.tolist()
+            #appends and logs
+            cvRFNME_INTENHAcc.append(scores.mean())
+            outdict['cvRFOriginalX_nme_intenhAcc'] = scores.mean()                 
+            logger.info('mean 5cv OriginalX NME intenh RF_Accuracy ={}'.format( scores.mean() ))
+            logger.info('all ={} \n==============================\n\n'.format( scores.tolist() ))
     
             # save model saving params into a numpy array
             outdict_save= gzip.open(os.path.join(save_to,'outdict_z{}_mu{}_{}.arg'.format(znum,num_centers,labeltype)), 'wb')
@@ -580,12 +759,24 @@ if __name__ == '__main__':
         colors = plt.cm.jet(np.linspace(0, 1, 16))
         fig = plt.figure(figsize=(20,10))
         ax1 = fig.add_subplot(2,1,1)
-        ax1.plot(varying_mu, initAccuracy, color=colors[6], ls=':', label='initAccuracy')
-        ax1.plot(varying_mu, cvRFZspaceAccuracy, color=colors[0], label='max_cvRF_Zspace')
-        ax1.plot(varying_mu, cvRFOriginalXAccuracy, color=colors[4], ls='-.', label='OriginalX_Acc_Malignant&Benign')
-        ax1.plot(varying_mu, normalizedMI, color=colors[8], label='normalizedMI')
+        ax1.plot(latent_size, initAccuracy, color=colors[6], ls=':', label='initAccuracy')
+        ax1.plot(latent_size, cvRFZspaceAccuracy, color=colors[0], label='max_cvRF_Zspace')
+        ax1.plot(latent_size, BorM_diag_bestAcc, color=colors[2], ls='-.', label='BorM_diag_bestAcc')  ## Average malignant and  benigng classs
+        ax1.plot(latent_size, cvRFOriginalXAccuracy, color=colors[4], ls='-.', label='OriginalX_Acc_Malignant&Benign')
+        ax1.plot(latent_size, normalizedMI, color=colors[8], label='normalizedMI')
         h1, l1 = ax1.get_legend_handles_labels()
         ax1.legend(h1, l1, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':10})
+    
+        ax2 = fig.add_subplot(2,1,2)
+        ax2.plot(latent_size, initAccuracy, color=colors[7], label='cvRFZspaceNME_DISTAcc')
+        ax2.plot(latent_size, cvRFZspaceAccuracy, color=colors[12], label='cvRFZspaceNME_INTENHAcc')
+        ax2.plot(latent_size, NME_DISTAcc, color=colors[7], ls='-.', label='NME_DISTAcc')  
+        ax2.plot(latent_size, NME_INTENHAcc, color=colors[12], ls='-.', label='NME_INTENHAcc')
+        ax2.plot(latent_size, cvRFNME_DISTAcc, color=colors[7], ls=':', label='OriginalX_cvRFNME_DISTAcc')  
+        ax2.plot(latent_size, cvRFNME_INTENHAcc, color=colors[12], ls=':', label='OriginalX_cvRFNME_INTENHAcc')
+        h2, l2 = ax2.get_legend_handles_labels()
+        ax2.legend(h2, l2, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':10})
+        fig.savefig(save_to+os.sep+'allDEC_Accu_NMI_mu{}_{}-unsuprv acc vs iteration.pdf'.format(num_centers,labeltype), bbox_inches='tight')    
     
     # save to R
 #    pdzfinal = pd.DataFrame( np.append( y[...,None], zfinal, 1) )

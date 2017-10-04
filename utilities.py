@@ -310,7 +310,7 @@ def plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, ax, title=None, legen
 
     # process labels 
     classes = [str(c) for c in np.unique(named_y)]
-    classes.remove('K_N/A_N/A')
+    classes.remove('K_nan_nan')
     colors=plt.cm.viridis(np.linspace(0,1,len(classes))) # plt.cm.gist_rainbow
     c_patchs = []
     greyc_U = np.array([0.5,0.5,0.5,0.5])
@@ -340,7 +340,7 @@ def plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, ax, title=None, legen
             
     if(legend):
         c_patchs.append(mpatches.Patch(color=greyc_U, label='unknown'))
-        plt.legend(handles=c_patchs, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':4})
+        plt.legend(handles=c_patchs, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':8})
     
 
     ax.set_xlim(-0.1,1.1)

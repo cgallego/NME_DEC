@@ -122,9 +122,9 @@ def get_pathologyLabels(YnxG):
                     label.append('nucl_grade_'+str(path_record['in_situ_nucl_grade_int']))
             
             if(path_record['histop_tp_ic_yn']==r'1'):
-                label=['Invasive']
+                label=['IDC']
                 if(roi_diagnosis=="INVASIVE DUCTAL CARCINOMA"):
-                    label.append("DC")
+                    label=['IDC']
                 
             if(path_record['histop_tp_isc_other_txt']):
                 label.append(path_record['histop_tp_isc_other_txt'])
@@ -132,7 +132,7 @@ def get_pathologyLabels(YnxG):
             label = roiLabel
         
         if(label==[]):
-            label = raw_input("label not parsed, enter manually: ")
+            label = [raw_input("label not parsed, enter manually: ")]
             
         # append
         print".. adding roi_id=%i, with label=%s, and diagnosis=%s \n"%(roi_id, label, roi_diagnosis)

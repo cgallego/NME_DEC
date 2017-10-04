@@ -109,30 +109,7 @@ class DECModel(model.MXModel):
         self.batch_size = batch_size
         self.G = self.ae_model.eval(X_train)/self.ae_model.eval(X_val)
 
-    def tsne_wtest(self, X_test, y_wtest, zfinal):
-        ## self=dec_model
-        ## embedded point zi and
-        N_test = X_test.shape[0] #X_test.transpose().shape
-        batch_size = 1 # 41  #256
-        test_iter = mx.io.NDArrayIter({'data': X_test}, batch_size=batch_size, shuffle=False,
-                                      last_batch_handle='pad')
-        args = {k: mx.nd.array(v.asnumpy(), ctx=self.xpu) for k, v in self.args.items()}
-        z_test = model.extract_feature(self.feature, args, None, test_iter, N_test, self.xpu).values()[0]
-        
-        z_wtest = np.vstack([zfinal, z_test])
-        
-        # For visualization we use t-SNE (van der Maaten & Hinton, 2008) applied to the embedded points zi. It
-        tsne = TSNE(n_components=2, perplexity=15, learning_rate=375,
-             init='pca', random_state=0, verbose=2, method='exact')
-        Z_tsne = tsne.fit_transform(z_wtest)
-        
-        # plot
-        fig = plt.figure()
-        ax = fig.add_subplot(1,1,1)
-        plot_embedding(Z_tsne, y_wtest, ax, title="tsne with test y class(%d)" % (y_wtest[-1]), legend=True, plotcolor=True)
-        #fig.savefig('results//tsne_wtest_NME_k'+str(num_centers)+'.pdf', bbox_inches='tight')    
-        #plt.close()            
-        
+
     def cluster(self, X, y, classes, fighome, update_interval=None):
         N = X.shape[0]
         if not update_interval:
@@ -280,7 +257,7 @@ class DECModel(model.MXModel):
         fig = plt.figure()
         ax = fig.add_subplot(1,1,1)
         plot_embedding(Z_tsne, y_tsne, ax, title="tsne with perplexity %d" % pp, legend=True, plotcolor=True)
-        fig.savefig(fighome+os.sep+'tsne_init_k'+str(self.num_centers)+'_z'+str(self.znum)+'.pdf', bbox_inches='tight')    
+        fig.savefig(fighome+os.sep+'tsne_init_z'+str(self.znum)+'.pdf', bbox_inches='tight')    
         plt.close()  
         
         # To initialize the cluster centers, we pass the data through
@@ -388,6 +365,52 @@ class DECModel(model.MXModel):
             
         return outdict        
         
+    def tsne_wtest(self, X_test, y_wtest, zfinal):
+        ## self=dec_model
+        ## embedded point zi and
+        X_test = combX[0,:]
+        X_test = np.reshape(X_test, (1,X_test.shape[0]))
+        y_test = y[0]
+        y_wtest = list(y)
+        y_wtest.append(y_test)
+        y_wtest = np.asarray(y_wtest)
+        # X_wtest = np.vstack([combX, X_test])
+               
+        ########
+        fighome = 'results//clusterDEC_unsuperv_QuantitativEval_wPerfm'
+        znum = 10
+        numc = 19    
+        dec_model = DECModel(mx.cpu(), combX, numc, 1.0, znum, 'model/NME_'+str(znum)+'k')
+        with open(fighome+os.sep+'NME_Quantitative_NMI_numc'+str(numc)+'_'+str(znum)+'z', 'rb') as fin:
+           savedict = pickle.load(fin)
+        
+        
+        N = combX.shape[0] #X_test.transpose().shape
+        test_iter = mx.io.NDArrayIter({'data': combX}, 
+                                      batch_size=1, 
+                                      shuffle=False,
+                                      last_batch_handle='pad')
+        args = {k: mx.nd.array(v.asnumpy(), ctx=dec_model.xpu) for k, v in savedict['end_args'].items()}
+        #  dec_for
+        z_test = model.extract_feature(dec_model.feature, args, None, test_iter, N, dec_model.xpu).values()[0]
+               
+        # For visualization we use t-SNE (van der Maaten & Hinton, 2008) applied to the embedded points zi. It
+        tsne = TSNE(n_components=2, perplexity=15, learning_rate=375,
+             init='pca', random_state=0, verbose=2, method='exact')
+        Z_tsne = tsne.fit_transform(z_test)
+        # plot
+        fig = plt.figure()
+        ax = fig.add_subplot(1,1,1)
+        y_tsne = savedict['clusterpts_labels']
+        plot_embedding(Z_tsne, y_tsne, ax, title="tsne with test y class(%s)" % (y_tsne[-1]), legend=True, plotcolor=True)
+        
+        # for cluster prediction 
+        p_test = np.zeros((z_test.shape[0], dec_model.num_centers))
+        dec_mu_final = args['dec_mu'].asnumpy()
+        dec_model.dec_op.forward([z_test, dec_mu_final], [p_test])
+        # the soft assignments qi (pred)
+        y_test_pred = p_test.argmax(axis=1)
+        print y_test_pred
         
         
 if __name__ == '__main__':    
@@ -425,7 +448,7 @@ if __name__ == '__main__':
                 if(str(y[k])==classes[j]): 
                     y_dec.append(numclasses[j])
         y_dec = np.asarray(y_dec)
-        
+    
     ########################################################
     # To build/Read AE
     ########################################################
@@ -516,19 +539,33 @@ if __name__ == '__main__':
     ## Quantitative evaluation        
     ## DEC for unknown number clusters
     ########################################################
-    fighome = 'results//clusterDEC_unsuperv_QuantitativEval'
+    import sklearn.neighbors 
+    from utilities import visualize_Zlatent_NN_fortsne_id
+    import matplotlib.patches as mpatches
+        
+    fighome = 'results//clusterDEC_unsuperv_QuantitativEval_wPerfm'
     ## visualize the progression of the embedded representation of a random subset data 
     # during training. For visualization we use t-SNE (van der Maaten & Hinton, 2008) 
     # applied to the embedded points z
-    allnum_centers = [n for n in range(4,25)] # unsupervised
+    allnum_centers = [n for n in range(3,21)] # unsupervised
 
     # get labels for real classes
     clusterpts_labels, clusterpts_diagnosis = data.get_pathologyLabels(YnxG)
+    clusterpts_labelsorig = clusterpts_labels
+    clusterpts_labels = np.asarray(clusterpts_labels, dtype='object')
     
     # implement generalizability and NMI
     generalizability = []
     normalizedMI = []
-    znum = 10
+    numc_TPR = []
+    numc_TNR = []
+    numc_Accu = []
+    znum = 20
+    # to plut progress
+    upto_numc = []
+    figprog = plt.figure()
+    axprog = figprog.add_subplot(1,1,1)
+    
     for numc in allnum_centers:
         print "Runing DEC with autoencoder of num_centers = ",numc
         print "Runing DEC with autoencoder of znum = ",znum
@@ -539,17 +576,78 @@ if __name__ == '__main__':
         with open('model/NME_clusters_unsuperv_'+str(numc)+'k_'+str(znum)+'z', 'wb') as fout:
             pickle.dump(outdict, fout)
         # to load  
-        #        with open('model/NME_clusters_unsuperv_'+str(numc)+'k','rb') as fin:
-        #            outdict = pickle.load(fin)
+        #with open('model/NME_clusters_unsuperv_'+str(numc)+'k_'+str(znum)+'z','rb') as fin:
+        #   outdict = pickle.load(fin)
         pfinal = outdict['p']
         zfinal = outdict['z']
+        y = YnxG[1]
+        
+        ##########################
+        # Calculate 5-nn TPR and TRN among pathological lesions
+        # Sensitivity (also called the true positive rate, the recall, or probability of detection in some fields) 
+        # measures the proportion of positives that are correctly identified as such (i.e. the percentage of sick people who are correctly identified as having the condition).
+        # Specificity (also called the true negative rate) measures the proportion of negatives that are correctly identified as such 
+        # create sklearn.neighbors
+        Z_embedding_tree = sklearn.neighbors.BallTree(zfinal, leaf_size=5)     
+        # This finds the indices of 5 closest neighbors
+        N = sum(y==np.unique(y)[0]) #for B
+        P = sum(y==np.unique(y)[1]) #for M
+        TP = []
+        TN = []
+        for k in range(zfinal.shape[0]):
+            iclass = y[k]
+            dist, ind = Z_embedding_tree.query([zfinal[k]], k=6)
+            dist5nn, ind5nn = dist[k!=ind], ind[k!=ind]
+            class5nn = y[ind5nn]
+            cluster5nn = clusterpts_labels[ind5nn]
+            # exlcude U class
+            class5nn = class5nn[class5nn!='U']
+            if(len(class5nn)>0):
+                predc=[]
+                for c in np.unique(class5nn):
+                    predc.append( sum(class5nn==c) )
+                # predicion based on majority
+                predclass = np.unique(class5nn)[predc==max(predc)]
                 
+                if(len(predclass)==1):
+                    # compute TP if M    
+                    if(iclass=='M'):
+                        TP.append(predclass[0]==iclass)
+                     # compute TN if B
+                    if(iclass=='B'):
+                        TN.append(predclass[0]==iclass)
+                        
+                if(len(predclass)==2):
+                    # compute TP if M    
+                    if(iclass=='M'):
+                        TP.append(predclass[1]==iclass)
+                    # compute TN if B
+                    if(iclass=='B'):
+                        TN.append(predclass[0]==iclass)
+        
+        # compute TPR and TNR
+        TPR = sum(TP)/float(P)
+        TNR = sum(TN)/float(N)
+        Accu = sum(TP+TN)/float(P+N)
+        print"True Posite Rate (TPR) = %f " % TPR
+        print"True Negative Rate (TNR) = %f " % TNR
+        print"Accuracy (Acc) = %f " % Accu
+        numc_TPR.append( TPR )               
+        numc_TNR.append( TNR )
+        numc_Accu.append( Accu )
+        
+        # visualize and interesting case        
+        tsne = TSNE(n_components=2, perplexity=15, learning_rate=75, init='pca', random_state=0, verbose=2, method='exact')
+        Z_tsne = tsne.fit_transform(zfinal)       
+        pdNN = visualize_Zlatent_NN_fortsne_id(Z_tsne, clusterpts_labels, 464, saveFigs=True)
+        print(pdNN)
+        
         ##########################                
         # Calculate normalized MI:
         # find the relative frequency of points in Wk and Cj
-        N = y.shape[0]
-        num_classes = len(np.unique(y)) # present but not needed during AE training
-        classes = np.unique(y)
+        N = combX.shape[0]
+        num_classes = len(np.unique(clusterpts_labels)) # present but not needed during AE training
+        classes = np.unique(clusterpts_labels)
         # to get final cluster memberships
         W = pfinal.argmax(axis=1)
         num_clusters = len(np.unique(W))
@@ -563,11 +661,13 @@ if __name__ == '__main__':
             absWk[k] = sum(W==k)
             for j in range(num_classes):
                 # find points of class j
-                absCj[j] = sum(y==classes[j])
+                absCj[j] = sum(clusterpts_labels==classes[j])
                 # find intersection 
                 ptsk = W==k 
-                MLE_kj[k,j] = sum(ptsk[y==classes[j]])
-                
+                MLE_kj[k,j] = sum(ptsk[clusterpts_labels==classes[j]])
+        # if not assignment incluster
+        absWk[absWk==0]=0.00001
+        
         # compute NMI
         numIwc = np.zeros((num_clusters,num_classes))
         for k in range(num_clusters):
@@ -588,16 +688,74 @@ if __name__ == '__main__':
         G = vis_absgradient_final(pfinal, zfinal, dec_mu, dec_model.sep) 
         generalizability.append( G )
         print "... DEC generalizability = ", G
+        
+        ##########################
+        # plot progress:
+        c_patchs = []
+        colors=['c','b','g','r','m']
+        labels=['NMI','generalizability','TPR','TNR','Accuracy']
+        for k in range(5):
+            c_patchs.append(mpatches.Patch(color=colors[k], label=labels[k]))
+        plt.legend(handles=c_patchs, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':10})
+        
+        upto_numc.append(numc)
+        axprog.plot(upto_numc, [10*NMI for NMI in normalizedMI],'.-c')   
+        axprog.plot(upto_numc, generalizability,'.-b') 
+        axprog.plot(upto_numc, numc_TPR,'.-g') 
+        axprog.plot(upto_numc, numc_TNR,'.-r')
+        axprog.plot(upto_numc, numc_Accu,'.-m')
+        axprog.set_xlabel("# clusters")
+        figprog.savefig(fighome+os.sep+'NMI_generalization_num_clusters'+str(num_clusters)+'_z'+str(znum)+'.pdf', bbox_inches='tight')    
+        plt.close()
+        
+        # save
+        savedict = {'end_args': dec_model.end_args,
+                    'clusterpts_labels': clusterpts_labels,
+                    'NMI': NMI,
+                    'G': G,
+                    'TPR': TPR,
+                    'TNR': TNR,
+                    'Accu': Accu}
+        
+        with open(fighome+os.sep+'NME_Quantitative_NMI_numc'+str(numc)+'_'+str(znum)+'z', 'wb') as fout:
+            pickle.dump(savedict, fout)
+        
+    #############
+    # plot final
+    figprog = plt.figure()
+    axprog = figprog.add_subplot(1,1,1)
+    c_patchs = []
+    colors=['c','b','g','r','m']
+    labels=['NMI','generalizability','TPR','TNR','Accuracy']
+    for k in range(5):
+        c_patchs.append(mpatches.Patch(color=colors[k], label=labels[k]))
+    plt.legend(handles=c_patchs, loc='center left', bbox_to_anchor=(1, 0.5), prop={'size':10})
     
-    ########################################################    
-    ## Experiment #2: Using Quantitative NMI clustering
-    ########################################################
-    fig = plt.figure()
-    ax = fig.add_subplot(1,1,1)
-    ax.plot(allnum_centers, [10*NMI for NMI in normalizedMI],'.-r')   
-    ax.plot(allnum_centers, generalizability,'.-b')   
-    ax.set_xlabel("# clusters")
-    fig.savefig(fighome+os.sep+'NMI_generalization_num_clusters'+str(num_clusters)+'_z'+str(znum)+'.pdf', bbox_inches='tight')    
-    plt.close()
-
+    axprog.plot(allnum_centers, [10*NMI for NMI in normalizedMI],'.-c')   
+    axprog.plot(allnum_centers, generalizability,'.-b') 
+    axprog.plot(allnum_centers, numc_TPR,'.-g') 
+    axprog.plot(allnum_centers, numc_TNR,'.-r')
+    axprog.plot(allnum_centers, numc_Accu,'.-m')
+    axprog.set_xlabel("# clusters")
+    figprog.savefig(fighome+os.sep+'NMI_generalization_overall_z'+str(znum)+'.pdf', bbox_inches='tight')    
+    
+    # save
+    savedict = {'end_args': dec_model.end_args,
+                'clusterpts_labels': clusterpts_labels,
+                'NMI': normalizedMI,
+                'G': generalizability,
+                'TPR': numc_TPR,
+                'TNR': numc_TNR,
+                'Accu':numc_Accu}
+    
+    with open(fighome+os.sep+'NME_Quantitative_NMI_'+str(znum)+'z', 'wb') as fout:
+        pickle.dump(savedict, fout)
+    
+    # save to R
+    pdzfinal = pd.DataFrame( np.append( y[...,None], zfinal, 1) )
+    pdzfinal.to_csv('datasets//zfinal.csv', sep=',', encoding='utf-8', header=False, index=False)
+    # to save to csv
+    pdcombX = pd.DataFrame( np.append( y[...,None], combX, 1) )
+    pdcombX.to_csv('datasets//combX.csv', sep=',', encoding='utf-8', header=False, index=False)
+        
         

@@ -25,9 +25,6 @@ if __name__ == '__main__':
     #####################################################
     ## 1) read in the datasets both all NME (to do pretraining)
     NME_nxgraphs = r'Z:\Cristina\Section3\NME_DEC\imgFeatures\NME_nxgraphs'
-    # start by loading nxGdatafeatures
-    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures.pklz'), 'rb') as fin:
-        nxGdatafeatures = pickle.load(fin)
     
     with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_dynamic.pklz'), 'rb') as fin:
         allNMEs_dynamic = pickle.load(fin)
@@ -42,40 +39,18 @@ if __name__ == '__main__':
         allNMEs_stage1 = pickle.load(fin) 
                     
     # to load SERw matrices for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_allNMEs_25binsize.pklz'), 'rb') as fin:
-        alldiscrSERcounts = pickle.load(fin)
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_allNMEs_10binsize.pklz'), 'rb') as fin:
+        nxGdatafeatures = pickle.load(fin)
     
     # to load discrall_dict dict for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_allNMEs_10binsize.pklz'), 'rb') as fin:
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGnormfeatures_allNMEs_10binsize.pklz'), 'rb') as fin:
         discrall_dict_allNMEs = pickle.load(fin)           
-   
-    #########
-    # exclude rich club bcs differnet dimenstions
-    delRC = discrall_dict_allNMEs.pop('discrallDEL_rich_club')
-    mstRC = discrall_dict_allNMEs.pop('discrallMST_rich_club')
-    delsC = discrall_dict_allNMEs.pop('discrallMST_scluster')
-    mstsC = discrall_dict_allNMEs.pop('discrallDEL_scluster')
-    ########## for nxGdiscfeatures.shape = (202, 420)
-    ds=discrall_dict_allNMEs.pop('DEL_dassort')
-    ms=discrall_dict_allNMEs.pop('MST_dassort')
-    # normalize 0-1    
-    x_min, x_max = np.min(ds, 0), np.max(ds, 0)
-    ds = (ds - x_min) / (x_max - x_min)
-    x_min, x_max = np.min(ms, 0), np.max(ms, 0)
-    ms = (ms - x_min) / (x_max - x_min)
-    
-    ## concatenate dictionary items into a nd array 
-    ## normalize per x
-    normgdiscf = []
-    for fname,fnxg in discrall_dict_allNMEs.iteritems():
-        print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
-        x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
-        x_max[x_max==0]=1.0e-07
-        fnxg = (fnxg - x_min) / (x_max - x_min)
-        normgdiscf.append( fnxg )
-        print(np.min(fnxg, 0))
-        print(np.max(fnxg, 0))
         
+    #########
+    # shape input (798L, 427L)    
+    nxGdiscfeatures = discrall_dict_allNMEs   
+    print('Loading {} all nxGdiscfeatures of size = {}'.format(nxGdiscfeatures.shape[0], nxGdiscfeatures.shape[1]) )
+    
     print 'Normalizing dynamic..  \n min={}, \n max={} \n'.format(np.min(allNMEs_dynamic, 0), np.max(allNMEs_dynamic, 0))
     x_min, x_max = np.min(allNMEs_dynamic, 0), np.max(allNMEs_dynamic, 0)
     x_max[x_max==0]=1.0e-07
@@ -106,79 +81,15 @@ if __name__ == '__main__':
     print(np.min(normstage1, 0))
     print(np.max(normstage1, 0))    
     
-    nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
-    # append other univariate features  nxGdiscfeatures.shape  (798L, 402L)
-    # normalize all values between 0 and 1                
-    nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
-                                        ds.reshape(len(ds),1),
-                                        ms.reshape(len(ms),1)), axis=1)
     # shape input (798L, 427L)    
-    combX_allNME = np.concatenate((alldiscrSERcounts, nxGdiscfeatures, normdynamic, normorpho, normtext, normstage1), axis=1)       
-    YnxG_allNME = [nxGdatafeatures['roi_label'].values,
-            nxGdatafeatures['roiBIRADS'].values,
-            nxGdatafeatures['NME_dist'].values,
-            nxGdatafeatures['NME_int_enh'].values]
-    
+    combX_allNME = np.concatenate((nxGdiscfeatures, normdynamic, normorpho, normtext, normstage1), axis=1)       
+    YnxG_allNME = [nxGdatafeatures['roi_id'].values,
+            nxGdatafeatures['classNME'].values,
+            nxGdatafeatures['nme_dist'].values,
+            nxGdatafeatures['nme_int'].values]
+            
     print('Loading {} all NME of size = {}'.format(combX_allNME.shape[0], combX_allNME.shape[1]) )
     print('Loading all NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_allNME[0].shape[0])   )
-    
-    ################
-    ## 1-b) read in the datasets both all NME and filledbyBC (to do finetunning)
-    # to load nxGdatafeatures df for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_filledbyBC.pklz'), 'rb') as fin:
-        nxGdatafeatures = pickle.load(fin)
-    # to load SERw matrices for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_filledbyBC.pklz'), 'rb') as fin:
-        alldiscrSERcounts = pickle.load(fin)
-
-    # to load discrall_dict dict for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_filledbyBC.pklz'), 'rb') as fin:
-        discrall_dict_filledbyBC = pickle.load(fin)
-                    
-    
-    ########
-    # exclude rich club bcs differnet dimenstions
-    delRC = discrall_dict_filledbyBC.pop('discrallDEL_rich_club')
-    mstRC = discrall_dict_filledbyBC.pop('discrallMST_rich_club')
-    delsC = discrall_dict_filledbyBC.pop('discrallMST_scluster')
-    mstsC = discrall_dict_filledbyBC.pop('discrallDEL_scluster')
-    ########## for nxGdiscfeatures.shape = (202, 420)
-    ds=discrall_dict_filledbyBC.pop('DEL_dassort')
-    ms=discrall_dict_filledbyBC.pop('MST_dassort')
-    # normalize 0-1    
-    x_min, x_max = np.min(ds, 0), np.max(ds, 0)
-    ds = (ds - x_min) / (x_max - x_min)
-    x_min, x_max = np.min(ms, 0), np.max(ms, 0)
-    ms = (ms - x_min) / (x_max - x_min)
-    
-    ## concatenate dictionary items into a nd array 
-    ## normalize per x
-    normgdiscf = []
-    for fname,fnxg in discrall_dict_filledbyBC.iteritems():
-        print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
-        x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
-        x_max[x_max==0]=1.0e-07
-        fnxg = (fnxg - x_min) / (x_max - x_min)
-        normgdiscf.append( fnxg )
-        print(np.min(fnxg, 0))
-        print(np.max(fnxg, 0))
-        
-    nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
-    # append other univariate features  nxGdiscfeatures.shape  (202L, 402L) 
-    # normalize all values between 0 and 1           
-    nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
-                                        ds.reshape(len(ds),1),
-                                        ms.reshape(len(ms),1)), axis=1)
-    # shape input (202L, 427L)
-    combX_filledbyBC = np.concatenate((alldiscrSERcounts, nxGdiscfeatures), axis=1)       
-    YnxG_filledbyBC = [nxGdatafeatures['roi_label'].values,
-            nxGdatafeatures['roiBIRADS'].values,
-            nxGdatafeatures['NME_dist'].values,
-            nxGdatafeatures['NME_int_enh'].values]
-
-    print('Loading {} NME filled by BC of size = {}'.format(combX_filledbyBC.shape[0], combX_filledbyBC.shape[1]) )
-    print('Loading NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_filledbyBC[0].shape[0])   )
-                                    
                    
     ######################
     ## 2) Pre-train/fine tune the SAE
@@ -193,11 +104,13 @@ if __name__ == '__main__':
     input_size = combX_allNME.shape[1]
     latent_size = [input_size/rxf for rxf in [25,15,10,5]]
     
-    # batch normalization
-    sep = int(combX_allNME.shape[0]*0.75)
-    X_train = combX_allNME[:sep]
-    X_val = combX_allNME[sep:]
-    batch_size = 400 # 160 32*5 = update_interval*5
+    # train/test splits (test is 10% of labeled data)
+    sep = int(combX_allNME.shape[0]*0.10)
+    X_val = combX_allNME[:sep]
+    y_val = YnxG_allNME[1][:sep]
+    X_train = combX_allNME[sep:]
+    y_train = YnxG_allNME[1][sep:]
+    batch_size = 125 # 160 32*5 = update_interval*5
     
     allAutoencoders = []
     for output_size in latent_size:
@@ -218,7 +131,9 @@ if __name__ == '__main__':
         # put useful metrics in a dict
         outdict = {'E_train': ae_model.eval(X_train),
                    'E_val': ae_model.eval(X_val),
-                   'output_size': output_size}
+                   'output_size': output_size,
+                   'sep': sep}
+                   
         allAutoencoders.append(outdict)
         # to save                      
         ae_model.save( os.path.join(save_to,'SAE_zsize{}_Nbatch_wimgfeatures.arg'.format(output_size)) )

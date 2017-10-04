@@ -35,7 +35,9 @@ import gzip
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_val_score
-
+from sklearn.metrics import roc_curve, auc
+from sklearn.model_selection import StratifiedKFold
+from scipy import interp
 
 def cluster_acc(Y_pred, Y):
     # Y_pred=ysup_pred; Y=y_dec
@@ -116,19 +118,18 @@ class DECModel(model.MXModel):
         self.best_args['num_centers'] = num_centers
         self.best_args['znum'] = znum
 
-    def cluster(self, X, y_dec, roi_labels, classes, batch_size, save_to, labeltype, update_interval=None):
-        # y = y_dec X, y_dec, roi_labels, classes, batch_size, save_to, labeltype, update_in
-        N = X.shape[0]
+    def cluster(self, X_train, y_dec_train, y_train, classes, batch_size, save_to, labeltype, update_interval=None):
+        N = X_train.shape[0]
         self.best_args['update_interval'] = update_interval
-        self.best_args['y_dec'] = y_dec 
-        self.best_args['roi_labels'] = roi_labels
+        self.best_args['y_dec'] = y_dec_train 
+        self.best_args['roi_labels'] = y_train
         self.best_args['classes'] = classes
         self.best_args['batch_size'] = batch_size
         
         # selecting batch size
         # [42*t for t in range(42)]  will produce 16 train epochs
         # [0, 42, 84, 126, 168, 210, 252, 294, 336, 378, 420, 462, 504, 546, 588, 630]
-        test_iter = mx.io.NDArrayIter({'data': X}, 
+        test_iter = mx.io.NDArrayIter({'data': X_train}, 
                                       batch_size=N, shuffle=False,
                                       last_batch_handle='pad')
         args = {k: mx.nd.array(v.asnumpy(), ctx=self.xpu) for k, v in self.args.items()}
@@ -139,7 +140,7 @@ class DECModel(model.MXModel):
         self.perplexity = 15
         self.learning_rate = 125
         # reconstruct wordy labels list(Y)==named_y
-        named_y = [classes[kc] for kc in y_dec]
+        named_y = [classes[kc] for kc in y_dec_train]
         self.best_args['named_y'] = named_y
         
         # To initialize the cluster centers, we pass the data through
@@ -159,17 +160,18 @@ class DECModel(model.MXModel):
             return np.sum(label*np.log(label/(pred+0.000001)))/label.shape[0]
         solver.set_metric(mx.metric.CustomMetric(ce))
 
-        label_buff = np.zeros((X.shape[0], self.best_args['num_centers']))
-        train_iter = mx.io.NDArrayIter({'data': X}, {'label': label_buff}, batch_size=self.best_args['batch_size'],
+        label_buff = np.zeros((X_train.shape[0], self.best_args['num_centers']))
+        train_iter = mx.io.NDArrayIter({'data': X_train}, {'label': label_buff}, batch_size=self.best_args['batch_size'],
                                        shuffle=False, last_batch_handle='roll_over')
-        self.best_args['y_pred'] = np.zeros((X.shape[0]))
+        self.best_args['y_pred'] = np.zeros((X_train.shape[0]))
         self.best_args['acci'] = []
         self.best_args['bestacci'] = []
         self.ploti = 0
-        figprogress = plt.figure(figsize=(20, 15))                    
+        figprogress = plt.figure(figsize=(20, 15))  
+        figROCs = plt.figure(figsize=(20, 15))                  
         print 'Batch_size = %f'% self.best_args['batch_size']
         print 'update_interval = %f'%  update_interval
-        self.best_args['plot_interval'] = int(5*update_interval)
+        self.best_args['plot_interval'] = int(20*update_interval)
         print 'plot_interval = %f'%  self.best_args['plot_interval']
         self.maxAcc = 0.0
         
@@ -181,7 +183,7 @@ class DECModel(model.MXModel):
                 self.dec_op.forward([z, args['dec_mu'].asnumpy()], [p])
                 # the soft assignments qi (pred)
                 y_pred = p.argmax(axis=1)
-                print np.std(np.bincount(y_dec)), np.bincount(y_dec)
+                #print np.std(np.bincount(y_dec_train)), np.bincount(y_dec_train)
                 print np.std(np.bincount(y_pred)), np.bincount(y_pred)
                 
                 #####################
@@ -189,123 +191,39 @@ class DECModel(model.MXModel):
                 #####################
                 # compare soft assignments with known labels (only B or M)
                 print '\n... Updating i = %f' % i      
-                allL = np.asarray(roi_labels)
-                data = z[allL!='K',:]
-                datalabels = allL[allL!='K']
+                allL = np.asarray(y_train)
+                Xdata = z[allL!='K',:]
+                ydatalabels = np.asarray(allL[allL!='K']=='M').astype(int) # malignant is positive class
+                
+                cv = StratifiedKFold(n_splits=5)
                 RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=500, random_state=0, verbose=0)
                 # Evaluate a score by cross-validation
+                tprs = []; aucs = []
+                mean_fpr = np.linspace(0, 1, 100)
+                cvi = 0
+                for train, test in cv.split(Xdata, ydatalabels):
+                    probas = RFmodel.fit(Xdata[train], ydatalabels[train]).predict_proba(Xdata[test])
+                    # Compute ROC curve and area the curve
+                    fpr, tpr, thresholds = roc_curve(ydatalabels[test], probas[:, 1])
+                    # to create an ROC with 100 pts
+                    tprs.append(interp(mean_fpr, fpr, tpr))
+                    tprs[-1][0] = 0.0
+                    roc_auc = auc(fpr, tpr)
+                    aucs.append(roc_auc)
+                    cvi += 1
+               
+                mean_tpr = np.mean(tprs, axis=0)
+                mean_tpr[-1] = 1.0
+                mean_auc = auc(mean_fpr, mean_tpr)
+                                    
                 # integer=5, to specify the number of folds in a (Stratified)KFold,
-                scores_BorM = cross_val_score(RFmodel, data, datalabels, cv=5)
+                #scores_BorM = cross_val_score(RFmodel, data, datalabels, cv=5)
                 # compute Z-space Accuracy
-                Acc = scores_BorM.mean()
+                #Acc = scores_BorM.mean()
+                Acc = mean_auc                       
                 print "cvRF BorM Accuracy = %f " % Acc
-                print scores_BorM.tolist()
-                
-                # use only the filledbyBC examples (first 0-202 exaples)           
-                nme_dist_label = [lab.split('_')[1] for lab in self.best_args['named_y'][0:202]] 
-                nme_intenh_label = [lab.split('_')[2] for lab in self.best_args['named_y'][0:202]] 
-                # compute Z-space Accuracy
-                scores_dist = cross_val_score(RFmodel, z[0:202], nme_dist_label, cv=5)
-                print "cvRF nme_dist Accuracy = %f " % scores_dist.mean()
-                scores_intenh = cross_val_score(RFmodel, z[0:202], nme_intenh_label, cv=5)
-                print "cvRF nme_intenh Accuracy = %f " % scores_intenh.mean()
-                
-                #####################
-                # CALCULATE 5nn METRICS
-                #####################
-                labels = np.asarray(self.best_args['named_y'])
-                Z_embedding_tree = sklearn.neighbors.BallTree(z, leaf_size=4)     
-                # This finds the indices of 5 closest neighbors
-                nme_dist = ['Diffuse', 'Focal', 'Linear', 'MultipleRegions', 'Regional','Segmental']
-                nme_intenh = ['Clumped', 'ClusteredRing', 'Heterogeneous', 'Homogeneous','Stippled or punctate']
-                wnme_dist = np.zeros((len(nme_dist),len(nme_dist)), dtype=np.int64)
-                wnme_intenh = np.zeros((len(nme_intenh),len(nme_intenh)), dtype=np.int64)
-                BorM_diag = []; TP = []; TN = []; FP = []; FN = []; missed=[];
-                NME_descript_dist = []
-                NME_descript_intenh = []    
-                # count stattistics
-                for k in range(z.shape[0]):
-                    iclass = labels[k]
-                    dist, ind = Z_embedding_tree.query([z[k]], k=2)
-                    dist5nn, ind5nn = dist[k!=ind], ind[k!=ind]
-                    class5nn = labels[ind5nn]
-                    # compute DIAGNOSTIC ACC based on nme similar local neighborhood                    
-                    if(iclass.split('_')[0]!='K'):
-                        predBorM=[]
-                        predBorM.append( sum([lab.split('_')[0]=='M' for lab in class5nn]) )
-                        predBorM.append( sum([lab.split('_')[0]=='B' for lab in class5nn]) )
-                        predBorM.append( sum([lab.split('_')[0]=='K' for lab in class5nn]) )
-                        pred_BorM = [['M','B','K'][l] for l,pc in enumerate(predBorM) if pc>=max(predBorM) and max(predBorM)>0][0]
-                        # compute TP if M  
-                        if(pred_BorM!='K'):
-                            if(iclass.split('_')[0]==pred_BorM):
-                                BorM_diag.append(1)
-                                # confusino table
-                                if(iclass.split('_')[0]=='M'):
-                                    TP.append(1)
-                                if(iclass.split('_')[0]=='B'):
-                                    TN.append(1)    
-                            if(iclass.split('_')[0]!=pred_BorM):
-                                if(iclass.split('_')[0]=='M'):
-                                    FN.append(1)
-                                if(iclass.split('_')[0]=='B'):
-                                    FP.append(1)
-                        else:
-                            missed.append(1)
-
-                    if(k<=202 and iclass.split('_')[1]!='N/A'):
-                        # increment detections for final NME descriptor accuracy
-                        prednmed=[]
-                        prednmed.append( sum([lab.split('_')[1]=='Diffuse' for lab in class5nn]) )
-                        prednmed.append( sum([lab.split('_')[1]=='Focal' for lab in class5nn]) )
-                        prednmed.append( sum([lab.split('_')[1]=='Linear' for lab in class5nn]) )
-                        prednmed.append( sum([lab.split('_')[1]=='MultipleRegions' for lab in class5nn]) )
-                        prednmed.append( sum([lab.split('_')[1]=='Regional' for lab in class5nn]) )
-                        prednmed.append( sum([lab.split('_')[1]=='Segmental' for lab in class5nn]) )
-                        # predicion based on majority voting
-                        pred_nme_dist = [nme_dist[l] for l,pc in enumerate(prednmed) if pc>=max(prednmed) and max(prednmed)>0]    
-                        # compute NME ACC based on nme similar local neighborhood
-                        if(iclass.split('_')[1] in pred_nme_dist):
-                            NME_descript_dist.append(1)
-                            
-                    if(k<=202 and iclass.split('_')[2]!='N/A'):
-                        prednmeie=[]
-                        prednmeie.append( sum([lab.split('_')[2]=='Clumped' for lab in class5nn]) )
-                        prednmeie.append( sum([lab.split('_')[2]=='ClusteredRing' for lab in class5nn]) )
-                        prednmeie.append( sum([lab.split('_')[2]=='Heterogeneous' for lab in class5nn]) )
-                        prednmeie.append( sum([lab.split('_')[2]=='Homogeneous' for lab in class5nn]) )
-                        prednmeie.append( sum([lab.split('_')[2]=='Stippled or punctate' for lab in class5nn]) )                        
-                        # predicion based on majority voting
-                        pred_nme_intenh = [nme_intenh[l] for l,pc in enumerate(prednmeie) if pc>=max(prednmeie) and max(prednmeie)>0] 
-                        # compute NME ACC based on nme similar local neighborhoo
-                        if(iclass.split('_')[2] in pred_nme_intenh):
-                            NME_descript_intenh.append(1)
-                            
-                #####################
-                # collect stats
-                #####################
-                BorM_diag_Acc = sum(BorM_diag)/float(len(datalabels))
-                #Acc = BorM_diag_Acc
-                print"BorM_diag_Acc = %f " % BorM_diag_Acc
-                ## good if high
-                TPR = sum(TP)/float(sum(datalabels=='M'))
-                print"TPR = %f " % TPR
-                TNR = sum(TN)/float(sum(datalabels=='B'))
-                print"TNR = %f " % TNR
-                ##  bad if high
-                FPR = sum(FP)/float(sum(datalabels=='B'))
-                print"FPR = %f " % FPR
-                FNR = sum(FN)/float(sum(datalabels=='M'))
-                print"FNR = %f " % FNR
-                # good if reduces
-                missedR = sum(np.asarray(missed))/float(len(datalabels))
-                print"missedR = %f " % missedR
-                                
-                Acc5nn_nme_dist = sum(NME_descript_dist)/202.0
-                Acc5nn_nme_intenh = sum(NME_descript_intenh)/202.0
-                print"Acc5nn_nme_dist (DIST) = %f " % Acc5nn_nme_dist
-                print"Acc5nn_nme_intenh (INT_ENH) = %f " % Acc5nn_nme_intenh    
-                
+                #print scores_BorM.tolist()
+                    
                 if(i==0):
                     tsne = TSNE(n_components=2, perplexity=self.perplexity, learning_rate=self.learning_rate,
                                 init='pca', random_state=0, verbose=2, method='exact')
@@ -314,7 +232,7 @@ class DECModel(model.MXModel):
                     # plot initial z        
                     figinint = plt.figure()
                     axinint = figinint.add_subplot(1,1,1)
-                    plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, axinint, title='kmeans init tsne: Acc={}\n RF_nme_dist={}\n RF_intenh={}'.format(Acc,scores_dist.mean(),scores_intenh.mean()), legend=True)
+                    plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, axinint, title='kmeans init tsne: Acc={}'.format(Acc), legend=True)
                     figinint.savefig('{}//tsne_init_z{}_mu{}_{}.pdf'.format(save_to,self.best_args['znum'],self.best_args['num_centers'],labeltype), bbox_inches='tight')     
                     plt.close()                  
                     
@@ -329,17 +247,7 @@ class DECModel(model.MXModel):
                     self.best_args['pbestacci'] = p
                     self.best_args['zbestacci']  = z 
                     self.best_args['bestacci'].append( Acc )
-                    self.best_args['cvRF_nme_dist'] = scores_dist.mean()
-                    self.best_args['cvRF_nme_intenh'] = scores_intenh.mean()
                     self.best_args['dec_mu'][:] = args['dec_mu'].asnumpy()
-                    self.best_args['BorM_diag_Acc'] = BorM_diag_Acc
-                    self.best_args['TPR'] = TPR
-                    self.best_args['TNR'] = TNR
-                    self.best_args['FPR'] = FPR
-                    self.best_args['FNR'] = FNR
-                    self.best_args['missedR'] = missedR
-                    self.best_args['Acc5nn_nme_dist'] = Acc5nn_nme_dist
-                    self.best_args['Acc5nn_nme_intenh'] = Acc5nn_nme_intenh
                 
                 if(i>0 and i%self.best_args['plot_interval']==0 and self.ploti<=15): 
                     # Visualize the progression of the embedded representation in a subsample of data
@@ -349,6 +257,53 @@ class DECModel(model.MXModel):
                     Z_tsne = tsne.fit_transform(z)
                     axprogress = figprogress.add_subplot(4,4,1+self.ploti)
                     plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, axprogress, title="Epoch %d z_tsne Acc (%f)" % (i,Acc), legend=False)
+                    
+                    # plot AUC
+                    allL = np.asarray(y_train)
+                    Xdata = z[allL!='K',:]
+                    ydatalabels = np.asarray(allL[allL!='K']=='M').astype(int) # malignant is positive class
+                    
+                    cv = StratifiedKFold(n_splits=5)
+                    RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=1000, random_state=0, verbose=0)
+                    # Evaluate a score by cross-validation
+                    tprs = []; aucs = []
+                    mean_fpr = np.linspace(0, 1, 100)
+                    cvi = 0
+                    for train, test in cv.split(Xdata, ydatalabels):
+                        probas = RFmodel.fit(Xdata[train], ydatalabels[train]).predict_proba(Xdata[test])
+                        # Compute ROC curve and area the curve
+                        fpr, tpr, thresholds = roc_curve(ydatalabels[test], probas[:, 1])
+                        # to create an ROC with 100 pts
+                        tprs.append(interp(mean_fpr, fpr, tpr))
+                        tprs[-1][0] = 0.0
+                        roc_auc = auc(fpr, tpr)
+                        aucs.append(roc_auc)
+                        # plot
+                        axaroc = figROCs.add_subplot(4,4,1+self.ploti)
+                        axaroc.plot(fpr, tpr, lw=1, alpha=0.5) # with label add: label='cv %d, AUC %0.2f' % (cvi, roc_auc)
+                        cvi += 1
+                        
+                    axaroc.plot([0, 1], [0, 1], linestyle='--', lw=1, color='b',
+                             label='Luck', alpha=.8)
+                    mean_tpr = np.mean(tprs, axis=0)
+                    mean_tpr[-1] = 1.0
+                    mean_auc = auc(mean_fpr, mean_tpr)
+                    std_auc = np.std(aucs)
+                    axaroc.plot(mean_fpr, mean_tpr, color='b',
+                             label=r'MeanROC (AUC = %0.2f $\pm$ %0.2f)' % (mean_auc, std_auc),
+                             lw=2, alpha=.8)     
+                    std_tpr = np.std(tprs, axis=0)
+                    tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
+                    tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
+                    axaroc.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2,
+                                     label=r'$\pm$ 1 std. dev.') 
+                    axaroc.set_xlim([-0.05, 1.05])
+                    axaroc.set_ylim([-0.05, 1.05])
+                    axaroc.set_xlabel('False Positive Rate')
+                    axaroc.set_ylabel('True Positive Rate')
+                    axaroc.set_title('ROC Epoch {}'.format(i))
+                    axaroc.legend(loc="lower right")
+                    
                     self.ploti = self.ploti+1
                       
                 ## COMPUTING target distributions P
@@ -361,7 +316,7 @@ class DECModel(model.MXModel):
                 
                 # For the purpose of discovering cluster assignments, we stop our procedure when less than tol% of points change cluster assignment between two consecutive iterations.
                 # tol% = 0.001
-                if i == self.best_args['update_interval']*100: # performs 1epoch = 615/3 = 205*1000epochs                     
+                if i == self.best_args['update_interval']*300: # performs 1epoch = 615/3 = 205*1000epochs                     
                     self.best_args['y_pred'] = y_pred   
                     self.best_args['acci'].append( Acc )
                     return True 
@@ -387,7 +342,7 @@ class DECModel(model.MXModel):
         tsne = TSNE(n_components=2, perplexity=self.perplexity, learning_rate=self.learning_rate,
              init='pca', random_state=0, verbose=2, method='exact')
         Z_tsne = tsne.fit_transform(self.best_args['zbestacci'])      
-        plot_embedding_unsuper_NMEdist_intenh(Z_tsne, self.best_args['named_y'], axfinal, title='final tsne: Acc={}\n RF_nme_dist={}\n RF_intenh={}'.format(self.best_args['bestacci'][-1],self.best_args['cvRF_nme_dist'],self.best_args['cvRF_nme_intenh']), legend=True)
+        plot_embedding_unsuper_NMEdist_intenh(Z_tsne, self.best_args['named_y'], axfinal, title='final tsne: Acc={}'.format(self.best_args['bestacci'][-1]), legend=True)
         figfinal.savefig('{}\\tsne_final_z{}_mu{}_{}.pdf'.format(save_to,self.best_args['znum'],self.best_args['num_centers'],labeltype), bbox_inches='tight')    
         plt.close()          
 
@@ -397,23 +352,14 @@ class DECModel(model.MXModel):
                     'pbestacci':self.best_args['pbestacci'],
                     'zbestacci':self.best_args['zbestacci'],
                     'dec_mubestacci':self.best_args['dec_mu'],
-                    'cvRF_nme_dist': self.best_args['cvRF_nme_dist'],
-                    'cvRF_nme_intenh': self.best_args['cvRF_nme_intenh'],
-                    'BorM_diag_Acc': self.best_args['BorM_diag_Acc'],
-                    'TPR': self.best_args['TPR'],
-                    'TNR': self.best_args['TNR'],
-                    'FPR': self.best_args['FPR'],
-                    'FNR': self.best_args['FNR'],
-                    'missedR': self.best_args['missedR'],
-                    'Acc5nn_nme_dist':self.best_args['Acc5nn_nme_dist'],
-                    'Acc5nn_nme_intenh':self.best_args['Acc5nn_nme_intenh'],
                     'y_pred': self.best_args['y_pred'],
                     'named_y': self.best_args['named_y'],
                     'classes':self.best_args['classes'],
                     'num_centers': self.best_args['num_centers'],
                     'znum':self.best_args['znum'],
                     'update_interval':self.best_args['update_interval'],
-                    'batch_size':self.best_args['batch_size']}                               
+                    'batch_size':self.best_args['batch_size']}  
+                             
         return outdict
         
             
@@ -424,122 +370,35 @@ if __name__ == '__main__':
     
     ## 1) read in the datasets both all NME (to do pretraining)
     NME_nxgraphs = r'Z:\Cristina\Section3\NME_DEC\imgFeatures\NME_nxgraphs'
-    # start by loading nxGdatafeatures
-    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures.pklz'), 'rb') as fin:
-        nxGdatafeatures = pickle.load(fin)
-                     
+    
     # to load SERw matrices for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_allNMEs_25binsize.pklz'), 'rb') as fin:
-        alldiscrSERcounts = pickle.load(fin)
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_allNMEs_10binsize.pklz'), 'rb') as fin:
+        nxGdatafeatures = pickle.load(fin)
     
     # to load discrall_dict dict for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_allNMEs_10binsize.pklz'), 'rb') as fin:
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGnormfeatures_allNMEs_10binsize.pklz'), 'rb') as fin:
         discrall_dict_allNMEs = pickle.load(fin)           
-   
-    #########
-    # exclude rich club bcs differnet dimenstions
-    delRC = discrall_dict_allNMEs.pop('discrallDEL_rich_club')
-    mstRC = discrall_dict_allNMEs.pop('discrallMST_rich_club')
-    delsC = discrall_dict_allNMEs.pop('discrallMST_scluster')
-    mstsC = discrall_dict_allNMEs.pop('discrallDEL_scluster')
-    ########## for nxGdiscfeatures.shape = (202, 420)
-    ds=discrall_dict_allNMEs.pop('DEL_dassort')
-    ms=discrall_dict_allNMEs.pop('MST_dassort')
-    # normalize 0-1    
-    x_min, x_max = np.min(ds, 0), np.max(ds, 0)
-    ds = (ds - x_min) / (x_max - x_min)
-    x_min, x_max = np.min(ms, 0), np.max(ms, 0)
-    ms = (ms - x_min) / (x_max - x_min)
-    
-    ## concatenate dictionary items into a nd array 
-    ## normalize per x
-    normgdiscf = []
-    for fname,fnxg in discrall_dict_allNMEs.iteritems():
-        print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
-        x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
-        x_max[x_max==0]=1.0e-07
-        fnxg = (fnxg - x_min) / (x_max - x_min)
-        normgdiscf.append( fnxg )
-        print(np.min(fnxg, 0))
-        print(np.max(fnxg, 0))
         
-    nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
-    # append other univariate features  nxGdiscfeatures.shape  (798L, 422L)               
-    nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
-                                        ds.reshape(len(ds),1),
-                                        ms.reshape(len(ms),1)), axis=1)
-    # shape input 
-    combX_allNME = np.concatenate((alldiscrSERcounts, nxGdiscfeatures), axis=1)       
-    YnxG_allNME = [nxGdatafeatures['roi_id'].values,
-            nxGdatafeatures['roi_label'].values,
-            nxGdatafeatures['roiBIRADS'].values,
-            nxGdatafeatures['NME_dist'].values,
-            nxGdatafeatures['NME_int_enh'].values]
-    
+    #########
+    # shape input (798L, 427L)    
+    nxGdiscfeatures = discrall_dict_allNMEs   
+    print('Loading {} all nxGdiscfeatures of size = {}'.format(nxGdiscfeatures.shape[0], nxGdiscfeatures.shape[1]) )
+       
+    # shape input (798L, 427L)    
+    combX_allNME = nxGdiscfeatures
+    YnxG_allNME = np.asarray([nxGdatafeatures['roi_id'].values,
+            nxGdatafeatures['classNME'].values,
+            nxGdatafeatures['nme_dist'].values,
+            nxGdatafeatures['nme_int'].values])
+            
     print('Loading {} all NME of size = {}'.format(combX_allNME.shape[0], combX_allNME.shape[1]) )
     print('Loading all NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_allNME[0].shape[0])   )
-    
-    ################
-    ## 1-b) read in the datasets both all NME and filledbyBC (to do finetunning)
-    # to load nxGdatafeatures df for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_filledbyBC.pklz'), 'rb') as fin:
-        nxGdatafeatures = pickle.load(fin)
-    # to load SERw matrices for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_filledbyBC.pklz'), 'rb') as fin:
-        alldiscrSERcounts = pickle.load(fin)
-    # to load discrall_dict dict for all lesions
-    with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_filledbyBC.pklz'), 'rb') as fin:
-        discrall_dict_filledbyBC = pickle.load(fin)
-    
-    ########
-    # exclude rich club bcs differnet dimenstions
-    delRC = discrall_dict_filledbyBC.pop('discrallDEL_rich_club')
-    mstRC = discrall_dict_filledbyBC.pop('discrallMST_rich_club')
-    delsC = discrall_dict_filledbyBC.pop('discrallMST_scluster')
-    mstsC = discrall_dict_filledbyBC.pop('discrallDEL_scluster')
-    ########## for nxGdiscfeatures.shape = (202, 420)
-    ds=discrall_dict_filledbyBC.pop('DEL_dassort')
-    ms=discrall_dict_filledbyBC.pop('MST_dassort')
-    # normalize 0-1    
-    x_min, x_max = np.min(ds, 0), np.max(ds, 0)
-    ds = (ds - x_min) / (x_max - x_min)
-    x_min, x_max = np.min(ms, 0), np.max(ms, 0)
-    ms = (ms - x_min) / (x_max - x_min)
-    
-    ## concatenate dictionary items into a nd array 
-    ## normalize per x
-    normgdiscf = []
-    for fname,fnxg in discrall_dict_filledbyBC.iteritems():
-        print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
-        x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
-        x_max[x_max==0]=1.0e-07
-        fnxg = (fnxg - x_min) / (x_max - x_min)
-        normgdiscf.append( fnxg )
-        print(np.min(fnxg, 0))
-        print(np.max(fnxg, 0))
-        
-    nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
-    # append other univariate features  nxGdiscfeatures.shape  (798L, 422L)               
-    nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
-                                        ds.reshape(len(ds),1),
-                                        ms.reshape(len(ms),1)), axis=1)
-    # shape input 
-    combX_filledbyBC = np.concatenate((alldiscrSERcounts, nxGdiscfeatures), axis=1)       
-    YnxG_filledbyBC = [nxGdatafeatures['roi_id'].values,
-            nxGdatafeatures['roi_label'].values,
-            nxGdatafeatures['roiBIRADS'].values,
-            nxGdatafeatures['NME_dist'].values,
-            nxGdatafeatures['NME_int_enh'].values]
-
-    print('Loading {} NME filled by BC of size = {}'.format(combX_filledbyBC.shape[0], combX_filledbyBC.shape[1]) )
-    print('Loading NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_filledbyBC[0].shape[0])   )
-                           
+             
     ######################
     ## 2) DEC using labeled cases
     ######################                                            
-    labeltype = 'roilabel_&NMEdist_onlynxG' 
-    save_to = r'Z:\Cristina\Section3\NME_DEC\SAEmodels\decModel_exp5'
-   
+    labeltype = 'classNME_onlynxG' 
+    save_to = r'Z:\Cristina\Section3\NME_DEC\SAEmodels\decModel_exp5'   
     #log
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
@@ -554,9 +413,8 @@ if __name__ == '__main__':
         
     # dfine num_centers according to clustering variable
     ## use y_dec to  minimizing KL divergence for clustering with known classes
-    X = combX_allNME  
-    ysup = YnxG_allNME[1]+'_'+YnxG_allNME[3]+'_'+YnxG_allNME[4]
-    ysup[range(combX_filledbyBC.shape[0])] = YnxG_filledbyBC[1]+'_'+YnxG_filledbyBC[3]+'_'+YnxG_filledbyBC[4] # +['_'+str(yl) for yl in YnxG_filledbyBC[3]]  
+    ysup = ["{}_{}_{}".format(a, b, c) if b!='nan' else "{}_{}".format(a, c) for a, b, c in zip(YnxG_allNME[1], YnxG_allNME[2], YnxG_allNME[3])]
+    #ysup[range(combX_filledbyBC.shape[0])] = YnxG_filledbyBC[1]+'_'+YnxG_filledbyBC[3]+'_'+YnxG_filledbyBC[4] # +['_'+str(yl) for yl in YnxG_filledbyBC[3]]  
     #ysup[range(combX_filledbyBC.shape[0])] = YnxG_filledbyBC[1]+'_'+YnxG_filledbyBC[3]
     ysup = ['K'+rl[1::] if rl[0]=='U' else rl for rl in ysup]
     roi_labels = YnxG_allNME[1]  
@@ -577,45 +435,41 @@ if __name__ == '__main__':
     # DEC
     ########################################################
     input_size = combX_allNME.shape[1]
-    latent_size = [input_size/rxf for rxf in [25,15,10,5]]
-    varying_mu = [int(np.round(var_mu)) for var_mu in np.linspace(10,20,11)]
+    latent_size = [input_size/rxf for rxf in [10,5]]
+    varying_mu = [int(np.round(var_mu)) for var_mu in np.linspace(3,10,8)]
     
     for num_centers in varying_mu:
         initAccuracy = []
-        cvRFZspaceAccuracy = []
-        cvRFZspaceNME_DISTAcc = []
-        cvRFZspaceNME_INTENHAcc = []
-        
-        BorM_diag_bestAcc = []
-        NME_DISTAcc = []
-        NME_INTENHAcc = []
+        cvRFZspaceAccuracy = []           
         normalizedMI = []
-        
         cvRFOriginalXAccuracy = []
-        cvRFNME_DISTAcc = []
-        cvRFNME_INTENHAcc = []
+
         # to load a prevously DEC model
         for znum in latent_size:
-            batch_size = 125
-            update_interval = 20
+            # batch normalization
+            sep = int(combX_allNME.shape[0]*0.10)
+            X_val = combX_allNME[:sep]
+            y_val = roi_labels[:sep]
+            X_train = combX_allNME[sep:]
+            y_dec_train = y_dec[sep:]
+            y_train = roi_labels[sep:]
+            batch_size = 125 # 160 
+            update_interval = 6
         
             #num_centers = len(classes)
             # Read autoencoder: note is not dependent on number of clusters just on z latent size
             print "Load autoencoder of znum = ",znum
             print "Training DEC num_centers = ",num_centers
             logger.info('Load autoencoder of znum = {}, mu = {} \n Training DEC'.format(znum,num_centers))
-            dec_model = DECModel(mx.cpu(), X, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
+            dec_model = DECModel(mx.cpu(), X_train, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
             logger.info('Tunning DEC batch_size ={}, alpha anheling={}'.format(batch_size,update_interval)) # orig paper 256*40 (10240) point for upgrade about 1/6 (N) of data
-            outdict = dec_model.cluster(X, y_dec, roi_labels, classes, batch_size, save_to, labeltype, update_interval) # 10 epochs# ~ per 1/3 of data 798/48=16 update twice per epoch ~ N/(batch size)=iterations to reach a full epochg
+            outdict = dec_model.cluster(X_train, y_dec_train, y_train, classes, batch_size, save_to, labeltype, update_interval) # 10 epochs# ~ per 1/3 of data 798/48=16 update twice per epoch ~ N/(batch size)=iterations to reach a full epochg
+            #
             logger.info('Finised trainining DEC...') 
             print 'dec_model bestacci = {}'.format( outdict['bestacci'][-1] )
             logger.info('dec_model bestacci = {}'.format( outdict['bestacci'][-1] ))
             print 'dec_model initAcc = {}'.format( outdict['initAcc'] )
             logger.info('dec_model initAcc = {}'.format( outdict['initAcc'] ))
-            print 'cvRF_nme_dist= {}'.format( outdict['cvRF_nme_dist'] )
-            logger.info('cvRF_nme_dist = {}'.format( outdict['cvRF_nme_dist'] ))
-            print 'cvRF_nme_intenh = {}'.format( outdict['cvRF_nme_intenh'] )
-            logger.info('cvRF_nme_intenh = {}'.format( outdict['cvRF_nme_intenh'] ))
             
             print '5nn BorM_diag_Acc = {}'.format( outdict['BorM_diag_Acc'] )
             logger.info('5nn BorM_diag_Acc = {}'.format( outdict['BorM_diag_Acc'] ))
@@ -633,12 +487,8 @@ if __name__ == '__main__':
             # save to plot as a function of znum        
             initAccuracy.append( outdict['initAcc'] )
             cvRFZspaceAccuracy.append( outdict['bestacci'][-1])
-            cvRFZspaceNME_DISTAcc.append( outdict['cvRF_nme_dist'] )
-            cvRFZspaceNME_INTENHAcc.append( outdict['cvRF_nme_intenh'] )
             BorM_diag_bestAcc.append( outdict['BorM_diag_Acc'] )
-            NME_DISTAcc.append( outdict['Acc5nn_nme_dist'] )
-            NME_INTENHAcc.append( outdict['Acc5nn_nme_intenh'] )
-       
+        
             # save output results
             dec_args_keys = ['encoder_1_bias', 'encoder_3_weight', 'encoder_0_weight', 
             'encoder_0_bias', 'encoder_2_weight', 'encoder_1_weight', 
@@ -648,6 +498,7 @@ if __name__ == '__main__':
             args_save = {key: v for key, v in dec_model.best_args.items() if key not in dec_args_keys}
             dec_model = dec_args.copy()
             dec_model.update(args_save) 
+            fname = save_to+os.sep+'args_save_z{}_mu{}.arg'.format(znum,num_centers)
             with open(fname, 'w') as fout:
                 pickle.dump(args_save, fout)
             # save model saving params into a numpy array
@@ -683,18 +534,18 @@ if __name__ == '__main__':
             #####################
             # Calculate normalized MI: find the relative frequency of points in Wk and Cj
             #####################
-            N = X.shape[0]
+            N = X_train.shape[0]
             num_classes = len(np.unique(roi_labels)) # present but not needed during AE training
             roi_classes = np.unique(roi_labels)
             roi_labels = np.asarray(roi_labels)
             
             # extact embedding space
-            all_iter = mx.io.NDArrayIter({'data': X}, batch_size=X.shape[0], shuffle=False,
+            all_iter = mx.io.NDArrayIter({'data': X_train}, batch_size=X_train.shape[0], shuffle=False,
                                                       last_batch_handle='pad')   
             ## embedded point zi 
-            aDEC = DECModel(mx.cpu(), X, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
+            aDEC = DECModel(mx.cpu(), X_train, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
             mxdec_args = {key: mx.nd.array(v) for key, v in dec_args.items() if key != 'dec_mubestacci'}                           
-            zbestacci = model.extract_feature(aDEC.feature, mxdec_args, None, all_iter, X.shape[0], aDEC.xpu).values()[0]      
+            zbestacci = model.extract_feature(aDEC.feature, mxdec_args, None, all_iter, X_train.shape[0], aDEC.xpu).values()[0]      
             # orig paper 256*40 (10240) point for upgrade about 1/6 (N) of data
             #zbestacci = dec_model['zbestacci'] 
             pbestacci = np.zeros((zbestacci.shape[0], dec_model['num_centers']))
@@ -739,7 +590,7 @@ if __name__ == '__main__':
           
             ######## train an RF on ORIGINAL space Finally perform a cross-validation using RF
             datalabels = YnxG_allNME[1]
-            data = X[datalabels!='K',:]
+            data = X_train[datalabels!='K',:]
             datalabels = datalabels[datalabels!='K']
             RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=500, random_state=0, verbose=1)
             # Evaluate a score by cross-validation
@@ -753,38 +604,6 @@ if __name__ == '__main__':
             outdict['cvRFOriginalXAccuracy'] = scores.mean()                 
             logger.info('mean 5cv cv OriginalX RF_Accuracy ={}'.format( scores.mean() ))
             logger.info('all ={}'.format( scores.tolist() ))
-    
-              
-            ######## train an RF on ORIGINAL space Finally perform a cross-validation using RF   
-            datalabels = YnxG_filledbyBC[3]
-            data = combX_filledbyBC
-            RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=500, random_state=0, verbose=1)
-            # Evaluate a score by cross-validation
-            # integer=5, to specify the number of folds in a (Stratified)KFold,
-            scores = cross_val_score(RFmodel, data, datalabels, cv=5)
-            print "(cvRF OriginalX_nme_distAcc = %f " % scores.mean()      
-            print scores.tolist()
-            
-            #appends and logs
-            cvRFNME_DISTAcc.append(scores.mean())
-            outdict['cvRFOriginalX_nme_distAcc'] = scores.mean()                 
-            logger.info('mean 5cv OriginalX NME DIST RF_Accuracy ={}'.format( scores.mean() ))
-            logger.info('all ={}'.format( scores.tolist() ))
-            
-            ######## train an RF on ORIGINAL space Finally perform a cross-validation using RF   
-            datalabels = YnxG_filledbyBC[4]
-            data = combX_filledbyBC
-            RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=500, random_state=0, verbose=1)
-            # Evaluate a score by cross-validation
-            # integer=5, to specify the number of folds in a (Stratified)KFold,
-            scores = cross_val_score(RFmodel, data, datalabels, cv=5)
-            print "(cvRF OriginalX_nme_intenhcc = %f " % scores.mean()      
-            print scores.tolist()
-            #appends and logs
-            cvRFNME_INTENHAcc.append(scores.mean())
-            outdict['cvRFOriginalX_nme_intenhAcc'] = scores.mean()                 
-            logger.info('mean 5cv OriginalX NME intenh RF_Accuracy ={}'.format( scores.mean() ))
-            logger.info('all ={} \n==============================\n\n'.format( scores.tolist() ))
     
             # save model saving params into a numpy array
             outdict_save= gzip.open(os.path.join(save_to,'outdict_z{}_mu{}_{}.arg'.format(znum,num_centers,labeltype)), 'wb')
