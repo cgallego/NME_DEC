@@ -8,65 +8,112 @@ Created on Wed May 03 16:47:40 2017
 ##############################################################################################################
 # 1) load saved variables
 ##############################################################################################################
-from decModel_exp2 import *
+import sys
+import os
+import mxnet as mx
+import numpy as np
+import pandas as pd
+
 from utilities import *
+import data
+import model
+from autoencoder import AutoEncoderModel
+from solver import Solver, Monitor
+import logging
+
+from sklearn.manifold import TSNE
+from utilities import *
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from scipy.spatial.distance import cdist
+from sklearn.cluster import KMeans
+import sklearn.neighbors 
+import matplotlib.patches as mpatches
+from sklearn.utils.linear_assignment_ import linear_assignment
+
+try:
+   import cPickle as pickle
+except:
+   import pickle
+import gzip
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import cross_val_score
+
+import numpy as np
+from scipy import interp
+import matplotlib.pyplot as plt
+from itertools import cycle
+
+from sklearn import svm, datasets
+from sklearn.metrics import roc_curve, auc
+from sklearn.model_selection import StratifiedKFold
+
+#####################################################
+from decModel_exp5_wimgF import *
 
 ## 1) read in the datasets both all NME (to do pretraining)
 NME_nxgraphs = r'Z:\Cristina\Section3\NME_DEC\imgFeatures\NME_nxgraphs'
-# start by loading nxGdatafeatures
-with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures.pklz'), 'rb') as fin:
-    nxGdatafeatures = pickle.load(fin)
-                 
+
+with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_dynamic.pklz'), 'rb') as fin:
+    allNMEs_dynamic = pickle.load(fin)
+
+with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_morphology.pklz'), 'rb') as fin:
+    allNMEs_morphology = pickle.load(fin)        
+
+with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_texture.pklz'), 'rb') as fin:
+    allNMEs_texture = pickle.load(fin)
+
+with gzip.open(os.path.join(NME_nxgraphs,'allNMEs_stage1.pklz'), 'rb') as fin:
+    allNMEs_stage1 = pickle.load(fin) 
+
 # to load SERw matrices for all lesions
-with gzip.open(os.path.join(NME_nxgraphs,'SER_edgesw_allNMEs_25binsize.pklz'), 'rb') as fin:
-    alldiscrSERcounts = pickle.load(fin)
+with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_allNMEs_10binsize.pklz'), 'rb') as fin:
+    nxGdatafeatures = pickle.load(fin)
 
 # to load discrall_dict dict for all lesions
-with gzip.open(os.path.join(NME_nxgraphs,'discrall_dict_allNMEs_10binsize.pklz'), 'rb') as fin:
+with gzip.open(os.path.join(NME_nxgraphs,'nxGnormfeatures_allNMEs_10binsize.pklz'), 'rb') as fin:
     discrall_dict_allNMEs = pickle.load(fin)           
-   
-#########
-# exclude rich club bcs differnet dimenstions
-delRC = discrall_dict_allNMEs.pop('discrallDEL_rich_club')
-mstRC = discrall_dict_allNMEs.pop('discrallMST_rich_club')
-delsC = discrall_dict_allNMEs.pop('discrallMST_scluster')
-mstsC = discrall_dict_allNMEs.pop('discrallDEL_scluster')
-########## for nxGdiscfeatures.shape = (202, 420)
-ds=discrall_dict_allNMEs.pop('DEL_dassort')
-ms=discrall_dict_allNMEs.pop('MST_dassort')
-# normalize 0-1    
-x_min, x_max = np.min(ds, 0), np.max(ds, 0)
-ds = (ds - x_min) / (x_max - x_min)
-x_min, x_max = np.min(ms, 0), np.max(ms, 0)
-ms = (ms - x_min) / (x_max - x_min)
 
-## concatenate dictionary items into a nd array 
-## normalize per x
-normgdiscf = []
-for fname,fnxg in discrall_dict_allNMEs.iteritems():
-    print 'Normalizing.. {} \n min={}, \n max={} \n'.format(fname, np.min(fnxg, 0), np.max(fnxg, 0))
-    x_min, x_max = np.min(fnxg, 0), np.max(fnxg, 0)
-    x_max[x_max==0]=1.0e-07
-    fnxg = (fnxg - x_min) / (x_max - x_min)
-    normgdiscf.append( fnxg )
-    print(np.min(fnxg, 0))
-    print(np.max(fnxg, 0))
-    
-nxGdiscfeatures = np.concatenate([gdiscf for gdiscf in normgdiscf], axis=1)
-# append other univariate features  nxGdiscfeatures.shape  (798L, 422L)               
-nxGdiscfeatures = np.concatenate((nxGdiscfeatures,                    
-                                    ds.reshape(len(ds),1),
-                                    ms.reshape(len(ms),1)), axis=1)
-# shape input 
-combX_allNME = np.concatenate((alldiscrSERcounts, nxGdiscfeatures), axis=1)       
-YnxG_allNME = [nxGdatafeatures['roi_id'].values,
-        nxGdatafeatures['roi_label'].values,
-        nxGdatafeatures['roiBIRADS'].values,
-        nxGdatafeatures['NME_dist'].values,
-        nxGdatafeatures['NME_int_enh'].values]
+#########
+# shape input (798L, 427L)    
+nxGdiscfeatures = discrall_dict_allNMEs   
+print('Loading {} all nxGdiscfeatures of size = {}'.format(nxGdiscfeatures.shape[0], nxGdiscfeatures.shape[1]) )
+print(np.min(nxGdiscfeatures, 0))
+print(np.max(nxGdiscfeatures, 0))
+
+print 'Normalizing dynamic..  \n min={}, \n max={} \n'.format(np.min(allNMEs_dynamic, 0), np.max(allNMEs_dynamic, 0))
+x_min, x_max = np.min(allNMEs_dynamic, 0), np.max(allNMEs_dynamic, 0)
+x_max[x_max==0]=1.0e-07
+normdynamic = (allNMEs_dynamic - x_min) / (x_max - x_min)
+
+print 'Normalizing morphology..  \n min={}, \n max={} \n'.format(np.min(allNMEs_morphology, 0), np.max(allNMEs_morphology, 0))
+x_min, x_max = np.min(allNMEs_morphology, 0), np.max(allNMEs_morphology, 0)
+x_max[x_max==0]=1.0e-07
+normorpho = (allNMEs_morphology - x_min) / (x_max - x_min)
+
+print 'Normalizing texture..  \n min={}, \n max={} \n'.format(np.min(allNMEs_texture, 0), np.max(allNMEs_texture, 0))
+x_min, x_max = np.min(allNMEs_texture, 0), np.max(allNMEs_texture, 0)
+x_max[x_max==0]=1.0e-07
+normtext = (allNMEs_texture - x_min) / (x_max - x_min)
+
+print 'Normalizing stage1..  \n min={}, \n max={} \n'.format(np.min(allNMEs_stage1, 0), np.max(allNMEs_stage1, 0))
+x_min, x_max = np.min(allNMEs_stage1, 0), np.max(allNMEs_stage1, 0)
+x_min[np.isnan(x_min)]=1.0e-07
+x_max[np.isnan(x_max)]=1.0
+normstage1 = (allNMEs_stage1 - x_min) / (x_max - x_min)
+normstage1[np.isnan(normstage1)]=1.0e-07
+
+# shape input (798L, 427L)    
+combX_allNME = np.concatenate((nxGdiscfeatures, normdynamic, normorpho, normtext, normstage1), axis=1)       
+YnxG_allNME = np.asarray([nxGdatafeatures['roi_id'].values,
+        nxGdatafeatures['classNME'].values,
+        nxGdatafeatures['nme_dist'].values,
+        nxGdatafeatures['nme_int'].values])
 
 print('Loading {} all NME of size = {}'.format(combX_allNME.shape[0], combX_allNME.shape[1]) )
-print('Loading all NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_allNME[0].shape[0]) )
+print('Loading all NME lables [label,BIRADS,dist,enh] of size = {}'.format(YnxG_allNME[0].shape[0])   )
 
 ## 1a) Load decModel_exp2 results
 ######################

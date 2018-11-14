@@ -310,7 +310,10 @@ def plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, ax, title=None, legen
 
     # process labels 
     classes = [str(c) for c in np.unique(named_y)]
-    classes.remove('K_nan_nan')
+    try:
+        classes.remove('K_nan_nan')
+    except:
+        pass
     colors=plt.cm.viridis(np.linspace(0,1,len(classes))) # plt.cm.gist_rainbow
     c_patchs = []
     greyc_U = np.array([0.5,0.5,0.5,0.5])
@@ -1235,3 +1238,221 @@ def plot_ROC_kStratcv(data, datalabels):
     plt.legend(loc="lower right")
     plt.show()
     #figscoresM.savefig(dec_model_load+os.sep+'StratifiedKFold_pooled_AUC_znum{}_numc{}_{}.pdf'.format(znum,num_centers,labeltype), bbox_inches='tight')    
+
+
+def visualize_nxgraphs_metrics(colorlegend=False):
+    '''
+    # Construct img dictionary calling visualize_nxgraphs_metrics(lesion_id) per lesion_id
+    from utilities import visualize_nxgraphs_metrics
+    # to run    
+    visualize_nxgraphs_metrics()
+    # with color bars
+    visualize_nxgraphs_metrics(colorlegend=True)
+    '''
+    import glob, sys, os
+    import six.moves.cPickle as pickle
+    import gzip
+    import SimpleITK as sitk
+    import networkx as nx
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    from sqlalchemy.orm import sessionmaker, joinedload_all
+    from sqlalchemy import create_engine
+    from sqlalchemy.ext.declarative import declarative_base
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt 
+
+    ################################### 
+    # to visualize graphs and MRI data
+    ###################################
+    NME_nxgraphs = r'Z:\Cristina\Section3\breast_MR_NME_biological\NMEs_SER_nxgmetrics'
+    processed_path = r'Y:\Anthony\Cristina\Section3\breast_MR_NME_pipeline\processed_data'
+    processed_NMEs_path = r'Z:\Cristina\Section3\breast_MR_NME_biological\processed_NMEs'
+    fig_path = r'Z:\Cristina\Section3\NME_DEC\figs'
+    
+    # gather other infor such as patient levels
+    sys.path.insert(0,'Z:\\Cristina\Section3\\breast_MR_NME_biological')
+    import localdatabase
+    # configure Session class with desired options
+    Session = sessionmaker()
+    queryengine = create_engine('sqlite:///Z:\\Cristina\\Section3\\breast_MR_NME_biological\\nonmass_roibiological.db', echo=False) # now on, when adding new cases # for filled by Z:\\Cristina\\Section3\\NME_DEC\\imgFeatures\\NME_forBIRADSdesc\\nonmass_roirecords.db
+    Session.configure(bind=queryengine)  # once engine is available
+    session = Session() #instantiate a Session
+
+    # to load SERw matrices for all lesions
+    with gzip.open(os.path.join(NME_nxgraphs,'nxGdatafeatures_allNMEs_descStats.pklz'), 'rb') as fin:
+        nxGdatafeatures = pickle.load(fin)
+    
+    list_lesion_ids = nxGdatafeatures['lesion_id'].values
+    list_lesion_ids = list_lesion_ids[list_lesion_ids > 422]
+    print list_lesion_ids
+    
+    for lesion_id in list_lesion_ids:
+        # perform query
+        ############# by lesion id
+        try:
+            lesion = session.query(localdatabase.Lesion_record, localdatabase.ROI_record).\
+                filter(localdatabase.ROI_record.lesion_id==localdatabase.Lesion_record.lesion_id).\
+                filter(localdatabase.Lesion_record.lesion_id == str(lesion_id)).options(joinedload_all('*')).all()
+            # print results
+        except:
+            print "lesion is empty"
+            lesion_id = lesion_id+1
+            continue
+        
+        print "lesion id={}".format(lesion_id)
+        lesion = lesion[0]    
+        # lesion frame       
+        lesion_record = pd.Series(lesion.Lesion_record.__dict__)
+        NME_record = pd.Series(lesion_record.nonmass_lesion[0].__dict__)
+        roi_record = pd.Series(lesion.ROI_record.__dict__)
+         
+        #lesion_id = lesion_record['lesion_id']
+        StudyID = lesion_record['cad_pt_no_txt']
+        AccessionN = lesion_record['exam_a_number_txt']
+        roi_id = roi_record['roi_id']
+        roiLabel = roi_record['roi_label']
+        zslice = int(roi_record['zslice'])
+        p1 = roi_record['patch_diag1']
+        patch_diag1 = p1[p1.find("(")+1:p1.find(")")].split(',')
+        patch_diag1 = [float(p) for p in patch_diag1]
+        p2 = roi_record['patch_diag2']
+        patch_diag2 = p2[p2.find("(")+1:p2.find(")")].split(',')
+        patch_diag2 = [float(p) for p in patch_diag2]    
+        ext_x = [int(ex) for ex in [np.min([patch_diag1[0],patch_diag2[0]])-20,np.max([patch_diag1[0],patch_diag2[0]])+20] ] 
+        ext_y = [int(ey) for ey in [np.min([patch_diag1[1],patch_diag2[1]])-20,np.max([patch_diag1[1],patch_diag2[1]])+20] ] 
+    
+        ###### 2) Accesing mc images, prob maps, gt_lesions and breast masks
+        DynSeries_id = NME_record['DynSeries_id']
+        precontrast_id = int(DynSeries_id) 
+        DynSeries_nums = [str(n) for n in range(precontrast_id,precontrast_id+5)]
+
+        # to read 4th post-C registered MRI to pre-contrast
+        print "Reading MRI 4th volume..."
+        try:
+            DynSeries_filename = '{}_{}_{}'.format(StudyID.zfill(4),AccessionN,DynSeries_nums[-1] )
+            print os.path.join(processed_path,DynSeries_filename+'@*')
+            
+            #write log if mha file not exist             
+            glob_result = glob.glob(os.path.join(processed_path,DynSeries_filename+'@*')) #'*':do not to know the exactly acquistion time
+            if glob_result != []:
+                filename = glob_result[0] 
+                print filename
+               
+            # read Volumnes
+            mriVolDICOM = sitk.ReadImage(filename)
+            mri4th = sitk.GetArrayFromImage(sitk.Cast(mriVolDICOM,sitk.sitkFloat32)) 
+        except:
+            print('   failed: locating MRI 4th volume!')
+            
+        ###### 3) load graph object into memory
+        with gzip.open( os.path.join(processed_NMEs_path,'{}_{}_{}_{}_lesion_nxgraph.pklz'.format(str(roi_id),StudyID.zfill(4),AccessionN,str(roiLabel))), 'rb') as f:
+            nxGraph = pickle.load(f)
+            
+        nxGraph_name = '{}_{}'.format(lesion_id,roiLabel)
+           
+        ###### 4) plot MRI + graph
+        # The triangles in parameter space determine which x, y, z points are connected by an edge
+        fig, ax = plt.subplots(dpi=200)   
+        # show MRI slice 
+        ax.imshow(mri4th[zslice,:,:], cmap=plt.cm.gray)
+        ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
+         # draw
+        nodeweights = [d['weight'] for (u,v,d) in nxGraph.edges(data=True)]
+        pos = np.asarray([p['pos'] for (u,p) in nxGraph.nodes(data=True)])
+    
+        nxg = nx.draw_networkx_edges(nxGraph, pos, ax=ax, edge_color=nodeweights, edge_cmap=plt.cm.inferno, 
+                                 width=1.5)
+        ax.set_adjustable('box-forced')
+        ax.get_xaxis().set_visible(False)                             
+        ax.get_yaxis().set_visible(False)
+            
+        # add color legend
+        if(colorlegend):
+            v = np.linspace(min(nodeweights), max(nodeweights), 10, endpoint=True)     
+            divider = make_axes_locatable(ax)
+            caxEdges = divider.append_axes("right", size="9%", pad=0.05)
+            plt.colorbar(nxg, cax=caxEdges, ticks=v) 
+    
+        # save
+        fig.savefig( os.path.join(fig_path,nxGraph_name+'.png'), bbox_inches='tight')    
+        plt.close()
+        
+        #################################### plot MRI + metrics
+        # DEGREE
+        fig, ax = plt.subplots(dpi=200)   
+        # show MRI slice 
+        ax.imshow(mri4th[zslice,:,:], cmap=plt.cm.gray)
+        ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
+        Degree = nx.degree_centrality(nxGraph) 
+        Dvalues = np.asarray([Degree.get(node) for node in nxGraph.nodes()])
+        v = np.linspace(min(Dvalues), max(Dvalues), 10, endpoint=True) 
+        nxg = nx.draw_networkx_nodes(nxGraph, pos, ax=ax, node_color=Dvalues, cmap=plt.cm.jet,  
+                         node_vmin=np.min(Dvalues), node_vmax=np.max(Dvalues),
+                         linewidths=0.0, with_labels=False, node_size=10)
+        nx.draw_networkx_edges(nxGraph, pos, ax=ax,  width=0.5)
+        ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
+        ax.set_adjustable('box-forced')
+        ax.get_xaxis().set_visible(False)                             
+        ax.get_yaxis().set_visible(False)
+        # add color legend
+        if(colorlegend):
+            divider = make_axes_locatable(ax)
+            caxEdges = divider.append_axes("right", size="9%", pad=0.05)
+            plt.colorbar(nxg, cax=caxEdges, ticks=v) 
+        # save
+        fig.savefig( os.path.join(fig_path,nxGraph_name+'_Degree.png'), bbox_inches='tight')    
+        plt.close()  
+        
+        # Betweenness
+        fig, ax = plt.subplots(dpi=200)   
+        # show MRI slice 
+        ax.imshow(mri4th[zslice,:,:], cmap=plt.cm.gray)
+        ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
+        Betweenness = nx.betweenness_centrality(nxGraph)
+        Betweennessvalues = np.asarray([Betweenness.get(node) for node in nxGraph.nodes()])
+        v = np.linspace(min(Betweennessvalues), max(Betweennessvalues), 10, endpoint=True) 
+        nxg = nx.draw_networkx_nodes(nxGraph, pos, ax=ax, node_color=Betweennessvalues, cmap=plt.cm.jet,  
+                         node_vmin=np.min(Betweennessvalues), node_vmax=np.max(Betweennessvalues),
+                         linewidths=0.0, with_labels=False, node_size=10)
+        nx.draw_networkx_edges(nxGraph, pos, ax=ax,  width=0.5)
+        ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
+        ax.set_adjustable('box-forced')
+        ax.get_xaxis().set_visible(False)                             
+        ax.get_yaxis().set_visible(False)
+        # add color legend
+        if(colorlegend):
+            divider = make_axes_locatable(ax)
+            caxEdges = divider.append_axes("right", size="9%", pad=0.05)
+            plt.colorbar(nxg, cax=caxEdges, ticks=v) 
+        # save
+        fig.savefig( os.path.join(fig_path,nxGraph_name+'_Betweenness.png'), bbox_inches='tight')    
+        plt.close() 
+        
+        # closeness
+        fig, ax = plt.subplots(dpi=200)   
+        # show MRI slice 
+        ax.imshow(mri4th[zslice,:,:], cmap=plt.cm.gray)
+        ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
+        closeness = nx.closeness_centrality(nxGraph)
+        closeness_values = np.asarray([closeness.get(node) for node in nxGraph.nodes()])
+        v = np.linspace(min(closeness_values), max(closeness_values), 10, endpoint=True) 
+        nxg = nx.draw_networkx_nodes(nxGraph, pos, ax=ax, node_color=closeness_values, cmap=plt.cm.jet,  
+                         node_vmin=np.min(closeness_values), node_vmax=np.max(closeness_values),
+                         linewidths=0.0, with_labels=False, node_size=10)
+        nx.draw_networkx_edges(nxGraph, pos, ax=ax,  width=0.5)
+        ax.axis((ext_y[0], ext_y[1], ext_x[1], ext_x[0]))
+        ax.set_adjustable('box-forced')
+        ax.get_xaxis().set_visible(False)                             
+        ax.get_yaxis().set_visible(False)
+        # add color legend
+        if(colorlegend):
+            divider = make_axes_locatable(ax)
+            caxEdges = divider.append_axes("right", size="9%", pad=0.05)
+            plt.colorbar(nxg, cax=caxEdges, ticks=v) 
+        # save
+        fig.savefig( os.path.join(fig_path,nxGraph_name+'_Closeness.png'), bbox_inches='tight')    
+        plt.close() 
+        
+        # continue
+    return

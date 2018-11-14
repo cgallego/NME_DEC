@@ -3,4 +3,9 @@
 *.pklz
 *.arg
 *.pyc
+/model
+/figs
+/imgFeatures
+/preliminaries
+/SAEmodels
 

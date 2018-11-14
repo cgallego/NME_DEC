@@ -156,14 +156,14 @@ class DECModel(model.MXModel):
         # our model is trained by matching the soft assignment to the target distribution. 
         # To this end, we define our objective as a KL divergence loss between 
         # the soft assignments qi (pred) and the auxiliary distribution pi (label)
-        solver = Solver('sgd', momentum=0.6, wd=0.05, learning_rate=0.00125, lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.5))   ### original: 0.01, try1: Solver('sgd', momentum=0.9, wd=0.0, learning_rate=0.000125, lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.5))  try 2: Solver('sgd', momentum=0.6, wd=0.05, learning_rate=0.00125, lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.5)) 
+        solver = Solver('sgd', momentum=0.9, wd=0.0, learning_rate=0.01)   ### original: 0.01, try1: Solver('sgd', momentum=0.9, wd=0.0, learning_rate=0.000125, lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.5))  try 2: Solver('sgd', momentum=0.6, wd=0.05, learning_rate=0.00125, lr_scheduler=mx.misc.FactorScheduler(20*update_interval,0.5)) 
         def ce(label, pred):
             return np.sum(label*np.log(label/(pred+0.000001)))/label.shape[0]
         solver.set_metric(mx.metric.CustomMetric(ce))
 
         label_buff = np.zeros((X_train.shape[0], self.best_args['num_centers']))
         train_iter = mx.io.NDArrayIter({'data': X_train}, {'label': label_buff}, batch_size=self.best_args['batch_size'],
-                                       shuffle=False, last_batch_handle='roll_over')
+                                       shuffle=True, last_batch_handle='roll_over')
         self.best_args['y_pred'] = np.zeros((X_train.shape[0]))
         self.best_args['acci'] = []
         self.best_args['bestacci'] = []
@@ -186,13 +186,18 @@ class DECModel(model.MXModel):
                 #print np.std(np.bincount(y_dec_train)), np.bincount(y_dec_train)
                 print np.std(np.bincount(y_pred)), np.bincount(y_pred)
                 
+                if(i==0):
+                    tsne = TSNE(n_components=2, perplexity=self.perplexity, learning_rate=self.learning_rate,
+                                init='pca', random_state=0, verbose=2, method='exact')
+                    self.Z_tsne = tsne.fit_transform(z)        
+                                     
                 #####################
                 # Z-space CV RF classfier METRICS
                 #####################
                 # compare soft assignments with known labels (only B or M)
                 print '\n... Updating i = %f' % i      
                 datalabels = np.asarray(y_train)
-                dataZspace = np.concatenate((z, p), axis=1) #zbestacci #dec_model['zbestacci']   
+                dataZspace = np.concatenate((z, self.Z_tsne), axis=1) #zbestacci #dec_model['zbestacci']   
                 Xdata = dataZspace[datalabels!='K',:]
                 ydatalabels = datalabels[datalabels!='K']
                 RFmodel = RandomForestClassifier(n_jobs=2, n_estimators=500, random_state=0, verbose=0)
@@ -205,17 +210,14 @@ class DECModel(model.MXModel):
                 print scores_BorM.tolist()
                 
                 if(i==0):
-                    tsne = TSNE(n_components=2, perplexity=self.perplexity, learning_rate=self.learning_rate,
-                                init='pca', random_state=0, verbose=2, method='exact')
-                    Z_tsne = tsne.fit_transform(z)        
                     self.best_args['initAcc'] = Acc
                     # plot initial z        
                     figinint = plt.figure()
                     axinint = figinint.add_subplot(1,1,1)
-                    plot_embedding_unsuper_NMEdist_intenh(Z_tsne, named_y, axinint, title='kmeans init tsne: Acc={}\n'.format(Acc), legend=True)
+                    plot_embedding_unsuper_NMEdist_intenh(self.Z_tsne, named_y, axinint, title='kmeans init tsne: Acc={}\n'.format(Acc), legend=True)
                     figinint.savefig('{}//tsne_init_z{}_mu{}_{}.pdf'.format(save_to,self.best_args['znum'],self.best_args['num_centers'],labeltype), bbox_inches='tight')     
-                    plt.close()                  
-                    
+                    plt.close() 
+                
                 # save best args
                 self.best_args['acci'].append( Acc )
                 if(Acc >= self.maxAcc):
@@ -226,6 +228,7 @@ class DECModel(model.MXModel):
                     self.maxAcc = Acc
                     self.best_args['pbestacci'] = p
                     self.best_args['zbestacci']  = z 
+                    self.Z_tsne = tsne.fit_transform(z)
                     self.best_args['bestacci'].append( Acc )
                     self.best_args['dec_mu'][:] = args['dec_mu'].asnumpy()
                 
@@ -258,7 +261,7 @@ class DECModel(model.MXModel):
 
         # start solver
         solver.set_iter_start_callback(refresh)
-        solver.set_monitor(Monitor(24))
+        solver.set_monitor(Monitor(20))
         solver.solve(self.xpu, self.loss, args, self.args_grad, None,
                      train_iter, 0, 1000000000, {}, False)
         self.end_args = args
@@ -324,7 +327,7 @@ if __name__ == '__main__':
         discrall_dict_allNMEs = pickle.load(fin)           
         
     #########
-    # shape input (798L, 427L)    
+    # shape input (798L, 427L)     
     nxGdiscfeatures = discrall_dict_allNMEs   
     print('Loading {} all nxGdiscfeatures of size = {}'.format(nxGdiscfeatures.shape[0], nxGdiscfeatures.shape[1]) )
     
@@ -410,7 +413,7 @@ if __name__ == '__main__':
     # DEC
     ########################################################
     input_size = combX_allNME.shape[1]
-    latent_size = [input_size/rxf for rxf in [10,5]]
+    latent_size = [input_size/rxf for rxf in [15,10,5]]
     varying_mu = [int(np.round(var_mu)) for var_mu in np.linspace(3,10,8)]
     
     for znum in latent_size:
@@ -428,8 +431,8 @@ if __name__ == '__main__':
             X_train = combX_allNME[sep:]
             y_dec_train = y_dec[sep:]
             y_train = roi_labels[sep:]
-            batch_size = 125 
-            update_interval = 24 # approx. 4 epochs per update
+            batch_size = 375
+            update_interval = 20 # approx. 4 epochs per update
             #            if(num_centers==3 and znum==30):
             #                continue
             
@@ -438,8 +441,10 @@ if __name__ == '__main__':
             print "Load autoencoder of znum = ",znum
             print "Training DEC num_centers = ",num_centers
             logger.info('Load autoencoder of znum = {}, mu = {} \n Training DEC'.format(znum,num_centers))
-            logger.info('DEC optimization using learnRate = {}, {} \n'.format(znum,num_centers))
-            dec_model = DECModel(mx.gpu(0), X_train, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
+            logger.info('DEC optimization using learnRate = Solver(sgd, learning_rate=0.01) \n')
+            logger.info('DEC batch_size = {}, update_interval = {} \n Training DEC'.format(batch_size,update_interval))
+            
+            dec_model = DECModel(mx.cpu(), X_train, num_centers, 1.0, znum, 'Z:\\Cristina\\Section3\\NME_DEC\\SAEmodels') 
             logger.info('Tunning DEC batch_size ={}, alpha anheling={}'.format(batch_size,update_interval)) # orig paper 256*40 (10240) point for upgrade about 1/6 (N) of data
             outdict = dec_model.cluster(X_train, y_dec_train, y_train, classes, batch_size, save_to, labeltype, update_interval) # 10 epochs# ~ per 1/3 of data 798/48=16 update twice per epoch ~ N/(batch size)=iterations to reach a full epochg
             #
@@ -579,7 +584,7 @@ if __name__ == '__main__':
         # plot latent space Accuracies vs. original
         colors = plt.cm.jet(np.linspace(0, 1, 16))
         fig = plt.figure(figsize=(20,10))
-        ax1 = fig.add_subplot(2,1,1)
+        ax1 = fig.add_subplot(1,1,1)
         ax1.plot(varying_mu, initAccuracy, color=colors[6], ls=':', label='initAccuracy')
         ax1.plot(varying_mu, cvRFZspaceAccuracy, color=colors[0], label='max_cvRF_Zspace')
         ax1.plot(varying_mu, cvRFOriginalXAccuracy, color=colors[4], ls='-.', label='OriginalX_Acc_Malignant&Benign')
